@@ -1044,10 +1044,10 @@ namespace ScreenLine.Tests
             WindowsNative.ActivateEditor(new System.Windows.Interop.WindowInteropHelper(testContext).Handle);
             shelf.Reveal(false, false, 0);
             await Task.Delay(300);
-            shelf.Reveal(true, true, 0);
             var timer = typeof(ShelfWindow).GetField("nextGust", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            timer.SetValue(shelf, default(DateTime));
+            shelf.Reveal(true, true, 0);
             var card = shelf.CardFor(path);
-            var rotation = (RotateTransform)card.RenderTransform;
             DateTime due = (DateTime)timer.GetValue(shelf);
             double delay = (due - DateTime.UtcNow).TotalSeconds;
             Check(delay > 0 && delay <= 24, "展开时已安排自然微风倒计时");
@@ -1061,11 +1061,11 @@ namespace ScreenLine.Tests
             await Task.Delay(TimeSpan.FromSeconds((due - DateTime.UtcNow).TotalSeconds + 1));
             Check(shelf.Revealed, "静止等待时绳子保持展开");
             Check((DateTime)timer.GetValue(shelf) > due, "无需滚动或鼠标操作，静止时自动触发自然微风");
-            await Until(() => Math.Abs(rotation.Angle - card.Tilt) > 0.2);
-            Check(Math.Abs(rotation.Angle - card.Tilt) > 0.2, "自然微风实际吹动图片");
+            await Until(() => Math.Abs(card.CurrentTilt - card.Tilt) > 0.2);
+            Check(Math.Abs(card.CurrentTilt - card.Tilt) > 0.2, "自然微风实际吹动图片");
             timer.SetValue(shelf, DateTime.UtcNow.AddMinutes(1));
-            await Task.Delay(4000);
-            Check(Math.Abs(rotation.Angle - card.Tilt) < 0.2, "自然微风结束后图片回稳");
+            await Until(() => Math.Abs(card.CurrentTilt - card.Tilt) < 0.2);
+            Check(Math.Abs(card.CurrentTilt - card.Tilt) < 0.2, "自然微风结束后图片回稳");
             shelf.Reveal(false, false, 0);
             due = DateTime.UtcNow;
             timer.SetValue(shelf, due);
@@ -1198,26 +1198,25 @@ namespace ScreenLine.Tests
                 timer.SetValue(shelf, DateTime.UtcNow.AddMinutes(1));
                 await Task.Delay(4900);
                 var card = shelf.CardFor(controller.Gallery.Items[2].Path);
-                var rotation = (RotateTransform)card.RenderTransform;
                 double start = viewport.HorizontalOffset;
                 await WheelOnCard(card, -120);
-                await Until(() => viewport.HorizontalOffset > start + 30 && rotation.Angle - card.Tilt < -0.2);
+                await Until(() => viewport.HorizontalOffset > start + 30 && card.CurrentTilt - card.Tilt < -0.2);
                 Check(viewport.HorizontalOffset > start + 30, "实际滚轮可横向移动图片列表");
-                Check(rotation.Angle - card.Tilt < -0.2, "向左滚动时图片向相反方向轻摆，呈现惯性");
+                Check(card.CurrentTilt - card.Tilt < -0.2, "向左滚动时图片向相反方向轻摆，呈现惯性");
                 Check(((Grid)shelf.Content).Children.Contains(viewport), "滚动图片区和固定衣篓入口同时保留");
                 await Task.Delay(900);
                 double reverseStart = viewport.HorizontalOffset;
                 await WheelOnCard(card, 120);
-                await Until(() => viewport.HorizontalOffset < reverseStart - 30 && rotation.Angle - card.Tilt > 0.2);
-                Check(rotation.Angle - card.Tilt > 0.2, "反向滚动时轻摆方向随之改变");
+                await Until(() => viewport.HorizontalOffset < reverseStart - 30 && card.CurrentTilt - card.Tilt > 0.2);
+                Check(card.CurrentTilt - card.Tilt > 0.2, "反向滚动时轻摆方向随之改变");
                 timer.SetValue(shelf, DateTime.UtcNow.AddMinutes(1));
                 SetCursorPos(shelf.Display.WorkingArea.Left + 10, shelf.Display.WorkingArea.Top + 100);
                 await Task.Delay(2800);
                 Check(shelf.Revealed, "等待滚动回稳时轨道保持展开");
-                Check(Math.Abs(rotation.Angle - card.Tilt) < 0.2, "停止滚动后图片逐渐恢复原来的悬挂角度");
+                Check(Math.Abs(card.CurrentTilt - card.Tilt) < 0.2, "停止滚动后图片逐渐恢复原来的悬挂角度");
                 await WheelOnCard(card, 120);
                 await Task.Delay(200);
-                Check(viewport.HorizontalOffset < 1 && Math.Abs(rotation.Angle - card.Tilt) < 0.2, "列表已到边界时不会凭空触发滚动摆动");
+                Check(viewport.HorizontalOffset < 1 && Math.Abs(card.CurrentTilt - card.Tilt) < 0.2, "列表已到边界时不会凭空触发滚动摆动");
                 await WheelOnCard(card, -120);
                 await Until(() => viewport.HorizontalOffset > 20);
                 DateTime scrollingDue = DateTime.UtcNow;
@@ -1246,10 +1245,10 @@ namespace ScreenLine.Tests
                     double delay = ((DateTime)timer.GetValue(shelf) - DateTime.UtcNow).TotalSeconds;
                     delays.Add(delay);
                     int direction = Math.Sign((double)angleField.GetValue(card));
-                    foreach (var item in controller.Gallery.Items)
+                    foreach (var item in controller.Gallery.Items.Where(item => shelf.CardFor(item.Path).Visibility == Visibility.Visible))
                         matchingDirection &= Math.Sign((double)angleField.GetValue(shelf.CardFor(item.Path))) == direction;
-                    await Until(() => Math.Abs(rotation.Angle - card.Tilt) > 0.05);
-                    matchingDirection &= Math.Sign(rotation.Angle - card.Tilt) == direction;
+                    await Until(() => Math.Abs(card.CurrentTilt - card.Tilt) > 0.05);
+                    matchingDirection &= Math.Sign(card.CurrentTilt - card.Tilt) == direction;
                     left |= direction < 0;
                     right |= direction > 0;
                 }
@@ -1257,8 +1256,8 @@ namespace ScreenLine.Tests
                 Check(delays.Max() - delays.Min() > 8, "吹动间隔有明显变化，避免接近固定周期");
                 Check(left && right && matchingDirection, "随机风能向左右两侧吹动，同一阵风的图片方向一致");
                 timer.SetValue(shelf, DateTime.UtcNow.AddMinutes(1));
-                await Task.Delay(3200);
-                Check(Math.Abs(rotation.Angle - card.Tilt) < 0.2, "风吹结束后图片逐渐回稳");
+                await Until(() => Math.Abs(card.CurrentTilt - card.Tilt) < 0.2);
+                Check(Math.Abs(card.CurrentTilt - card.Tilt) < 0.2, "风吹结束后图片逐渐回稳");
                 shelf.Reveal(false, false, 0);
             }
             finally { randomField.SetValue(shelf, originalRandom); shelf.Width = width; }

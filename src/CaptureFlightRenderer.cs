@@ -173,12 +173,16 @@ namespace ScreenLine
                     while (PeekMessage(out message, IntPtr.Zero, 0, 0, 1)) { TranslateMessage(ref message); DispatchMessage(ref message); }
                     double now = seconds();
                     long began = Stopwatch.GetTimestamp();
-                    lock (gate) Draw(now);
+                    Gdi.Rectangle frameRect;
+                    lock (gate) frameRect = Draw(now);
                     long drawn = Stopwatch.GetTimestamp();
-                    var offset = new Point();
+                    if (frameRect.Width <= 0 || frameRect.Height <= 0) frameRect = new Gdi.Rectangle(0, 0, width, height);
+                    var offset = new Point { X = frameRect.X, Y = frameRect.Y };
                     var blend = new Blend { Alpha = (byte)(255 * Math.Max(0, 1 - Math.Max(0, now - 0.65) / 0.16)), Format = 1 };
-                    var position = new Point { X = left, Y = top }; var size = new LayerSize { Width = width, Height = height };
-                    // 每帧连同完整尺寸提交，确保桌面合成器刷新图像内容。
+                    var position = new Point { X = left + frameRect.X, Y = top + frameRect.Y };
+                    var size = new LayerSize { Width = frameRect.Width, Height = frameRect.Height };
+                    // 只提交本帧发生变化的区域（上一帧位置已被清除、新位置已绘入，取两者并集），
+                    // 避免每帧把整屏位图上传给桌面合成器；首帧因 dirty 初始为全屏仍会完整提交一次。
                     bool updatedLayer = UpdateLayeredWindow(window, IntPtr.Zero, ref position, ref size, dc, ref offset, 0, ref blend, 2);
                     if (!updatedLayer)
                     { if (stopped) break; throw new System.ComponentModel.Win32Exception(); }
@@ -209,7 +213,7 @@ namespace ScreenLine
             }
         }
 
-        void Draw(double now)
+        Gdi.Rectangle Draw(double now)
         {
             double progress = Math.Min(1, now / 0.65);
             double ease = progress * progress * progress * (10 + progress * (-15 + 6 * progress));
@@ -269,9 +273,14 @@ namespace ScreenLine
             if (!AlphaBlend(dc, destination.X, destination.Y, destination.Width, destination.Height, rotatedDc,
                 64 - padX, 64 - padY, spriteWidth + 2 * padX, spriteHeight + 2 * padY, blend)) throw new System.ComponentModel.Win32Exception();
             GdiFlush();
-            dirty = Gdi.Rectangle.Intersect(destination, new Gdi.Rectangle(0, 0, width, height));
+            var screen = new Gdi.Rectangle(0, 0, width, height);
+            var drawn = Gdi.Rectangle.Intersect(destination, screen);
+            // 本帧需要呈现的区域 = 上一帧画面所在区域（已在上方 PatBlt 清除）∪ 本帧新画面区域。
+            var present = Gdi.Rectangle.Union(dirty, drawn);
+            dirty = drawn;
             double sampleX = w * 0.8 - w / 2, sampleY = h * 0.65 + 12;
             samplePoint = new System.Windows.Point(x + w / 2 + cosine * sampleX - sine * sampleY, y - 12 + sine * sampleX + cosine * sampleY);
+            return present.IsEmpty ? screen : present;
         }
 
         static Gdi2D.GraphicsPath Rounded(double x, double y, double width, double height, double radius)

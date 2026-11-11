@@ -410,21 +410,35 @@ namespace ScreenLine
             detached.Freeze(); return detached;
         }
 
+        // 原文件已是 PNG 时，直接用文件字节作为剪贴板的 PNG 数据，省去整图重新编码；
+        // 透明通道全为零的图仍按不透明图像重新编码。
+        public static byte[] ClipboardPng(BitmapDecoder decoder, byte[] file)
+        {
+            var image = decoder.Frames[0];
+            bool reusable = decoder is PngBitmapDecoder && !EmptyAlpha(new FormatConvertedBitmap(image, PixelFormats.Bgra32, null, 0));
+            return reusable ? file : EncodeClipboard(image);
+        }
+
+        static bool EmptyAlpha(BitmapSource converted)
+        {
+            int stride = converted.PixelWidth * 4;
+            byte[] rows = new byte[stride * Math.Min(32, converted.PixelHeight)];
+            for (int y = 0; y < converted.PixelHeight; y += 32)
+            {
+                int height = Math.Min(32, converted.PixelHeight - y);
+                converted.CopyPixels(new Int32Rect(0, y, converted.PixelWidth, height), rows, stride, 0);
+                for (int i = 3; i < stride * height; i += 4)
+                    if (rows[i] != 0) return false;
+            }
+            return true;
+        }
+
         public static byte[] EncodeClipboard(BitmapSource image)
         {
             // 部分 Windows 位图的透明通道全为零，截图应按不透明图像保存。
             var converted = new FormatConvertedBitmap(image, PixelFormats.Bgra32, null, 0);
             int stride = converted.PixelWidth * 4;
-            byte[] rows = new byte[stride * Math.Min(32, converted.PixelHeight)];
-            bool emptyAlpha = true;
-            for (int y = 0; y < converted.PixelHeight && emptyAlpha; y += 32)
-            {
-                int height = Math.Min(32, converted.PixelHeight - y);
-                converted.CopyPixels(new Int32Rect(0, y, converted.PixelWidth, height), rows, stride, 0);
-                for (int i = 3; i < stride * height; i += 4)
-                    if (rows[i] != 0) { emptyAlpha = false; break; }
-            }
-            if (emptyAlpha)
+            if (EmptyAlpha(converted))
             {
                 byte[] pixels = new byte[stride * converted.PixelHeight];
                 converted.CopyPixels(pixels, stride, 0);

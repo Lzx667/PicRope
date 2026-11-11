@@ -37,7 +37,7 @@ namespace ScreenLine.Tests
                 try
                 {
                     var assembly = Assembly.LoadFrom(Path.GetFullPath(args[0]));
-                    assembly.GetType("ScreenLine.LightTheme").GetMethod("Install").Invoke(null, new object[] { app });
+                    assembly.GetType("ScreenLine.LightTheme").GetMethod("Install").Invoke(null, new object[] { app, args.Contains("software") });
                     string profile = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "performance", Guid.NewGuid().ToString("N"));
                     Directory.CreateDirectory(profile);
                     int count = args.Length > 2 ? int.Parse(args[2]) : 27;

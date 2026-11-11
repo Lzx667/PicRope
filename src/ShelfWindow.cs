@@ -30,6 +30,8 @@ namespace ScreenLine
         readonly Canvas content = new Canvas();
         readonly Canvas line = new Canvas();
         readonly System.Windows.Shapes.Path rope = new System.Windows.Shapes.Path();
+        readonly PathGeometry ropeGeometry = new PathGeometry();
+        readonly QuadraticBezierSegment ropeCurve = new QuadraticBezierSegment();
         readonly LinearGradientBrush edgeMask = new LinearGradientBrush(new GradientStopCollection {
             new GradientStop(Colors.White, 0), new GradientStop(Colors.White, 0.03),
             new GradientStop(Colors.White, 0.97), new GradientStop(Colors.White, 1)
@@ -136,7 +138,6 @@ namespace ScreenLine
                     if (trackingScrollHover) { scrollHover.Stop(); scrollHover.Start(); }
                 }
                 if (e.ExtentWidthChange != 0 || e.ViewportWidthChange != 0) lastScrollOffset = viewport.HorizontalOffset;
-                foreach (var card in cards.Values) card.Frame(0, ropeMotion.Position, LineWidth, viewport.HorizontalOffset);
                 UpdateEdgeMask();
             };
             viewport.PreviewMouseWheel += delegate(object sender, MouseWheelEventArgs e)
@@ -345,6 +346,13 @@ namespace ScreenLine
                     card.Surface.MouseLeave += delegate { Preview.Leave(hovered); };
                     card.PreviewMouseDown += delegate { scrollHover.Stop(); trackingScrollHover = false; Preview.Dismiss(); };
                     card.Grip.MouseEnter += delegate { Preview.Dismiss(); };
+                    // 悬停与按压的缩放由逐帧刷新驱动：状态一变就开始刷新，不必等下一次指针轮询（最长 30 毫秒）。
+                    card.Surface.MouseEnter += delegate { StartRendering(); };
+                    card.Surface.MouseLeave += delegate { StartRendering(); };
+                    card.Grip.MouseEnter += delegate { StartRendering(); };
+                    card.Grip.MouseLeave += delegate { StartRendering(); };
+                    card.PreviewMouseDown += delegate { StartRendering(); };
+                    card.PreviewMouseUp += delegate { StartRendering(); };
                     card.ApplyTheme(Appearance, gallery.Items.IndexOf(item));
                     var mounted = card;
                     card.Grip.Click += async delegate { await ReleasePhoto(mounted); };
@@ -388,6 +396,7 @@ namespace ScreenLine
                 card.Place(x, !Revealed);
                 card.Frame(0, ropeMotion.Position, LineWidth, viewport.HorizontalOffset);
             }
+            SyncCardVisibility();
         }
 
         internal CaptureItem[] HangingItems()
@@ -414,11 +423,16 @@ namespace ScreenLine
             if (Math.Abs(drawnWidth - LineWidth) < 0.01 && Math.Abs(drawnSag - ropeMotion.Position) < 0.01) return;
             drawnWidth = LineWidth;
             drawnSag = ropeMotion.Position;
-            var geometry = new PathGeometry();
-            var shape = new PathFigure { StartPoint = new Point(0, 18) };
-            shape.Segments.Add(new QuadraticBezierSegment(new Point(drawnWidth / 2, 18 + 2 * drawnSag), new Point(drawnWidth, 18), true));
-            geometry.Figures.Add(shape);
-            rope.Data = geometry;
+            // 复用同一条曲线，只改控制点，避免绳子摆动时每帧新建整套几何对象。
+            if (rope.Data == null)
+            {
+                var shape = new PathFigure { StartPoint = new Point(0, 18) };
+                shape.Segments.Add(ropeCurve);
+                ropeGeometry.Figures.Add(shape);
+                rope.Data = ropeGeometry;
+            }
+            ropeCurve.Point1 = new Point(drawnWidth / 2, 18 + 2 * drawnSag);
+            ropeCurve.Point2 = new Point(drawnWidth, 18);
             Point hook = PictureBasket.Hook(Appearance);
             double fraction = (PhotoWidth + AccessoryWidth - 156 + 22 + hook.X) / LineWidth;
             double offset = 4 * drawnSag * fraction * (1 - fraction);
@@ -583,7 +597,7 @@ namespace ScreenLine
                 await Task.Delay(40);
                 var image = await picture;
                 if (closing || card.IsDisposed) return;
-                var window = new PinnedImageWindow(card.Item, origin, ((RotateTransform)card.RenderTransform).Angle, image, Appearance, card.ColorIndex);
+                var window = new PinnedImageWindow(card.Item, origin, card.CurrentTilt, image, Appearance, card.ColorIndex);
                 pins.Add(card.Item.Path, window);
                 window.Closed += delegate
                 {
@@ -644,7 +658,7 @@ namespace ScreenLine
             else
             {
                 if (nextGust == default(DateTime)) nextGust = DateTime.UtcNow.AddSeconds(7 + random.NextDouble() * 17);
-                foreach (var card in cards.Values) card.Nudge(1.2);
+                foreach (var card in VisibleCards()) card.Nudge(1.2);
             }
         }
 
@@ -669,7 +683,7 @@ namespace ScreenLine
             {
                 return !revealMotion.Settled || !ropeMotion.Settled || !scrollMotion.Settled || !basketMotion.Settled
                     || !basketCounterMotion.Settled || (gallery.Store.State.CollectTextClipboard && envelopeImage.Animating)
-                    || cards.Values.Any(card => card.Animating);
+                    || VisibleCards().Any(card => card.Animating);
             }
         }
 
@@ -706,10 +720,12 @@ namespace ScreenLine
                 scrollMotion.Position = Math.Max(0, Math.Min(scrollMotion.Position, ScrollLimit));
                 scrollMotion.Velocity = 0;
             }
-            viewport.ScrollToHorizontalOffset(scrollMotion.Position);
+            if (Math.Abs(viewport.HorizontalOffset - scrollMotion.Position) > 0.01)
+                viewport.ScrollToHorizontalOffset(scrollMotion.Position);
             double scrollVelocity = Revealed && elapsed > 0 ? (viewport.HorizontalOffset - lastScrollOffset) / elapsed : 0;
             lastScrollOffset = viewport.HorizontalOffset;
-            foreach (var card in cards.Values)
+            SyncCardVisibility();
+            foreach (var card in VisibleCards())
             {
                 card.ScrollWith(scrollVelocity);
                 card.Frame(elapsed, ropeMotion.Position, LineWidth, viewport.HorizontalOffset);
@@ -721,7 +737,7 @@ namespace ScreenLine
         {
             Point local = PointFromScreen(new Point(cursor.X, cursor.Y));
             var photoArea = viewport.TransformToAncestor(this).TransformBounds(new Rect(viewport.RenderSize));
-            IEnumerable<FrameworkElement> targets = cards.Values.Where(c => !c.Flying && !c.Detached).SelectMany(c => new FrameworkElement[] { c.Surface, c.Grip });
+            IEnumerable<FrameworkElement> targets = VisibleCards().Where(c => !c.Flying).SelectMany(c => new FrameworkElement[] { c.Surface, c.Grip });
             if (hint.IsVisible) targets = targets.Concat(new[] { hint });
             targets = targets.Concat(new[] { BasketButton, TextButton }.Where(button => button.IsVisible));
             foreach (var target in targets)
@@ -746,7 +762,7 @@ namespace ScreenLine
             bool over = Revealed && OverControl(cursor);
             var now = DateTime.UtcNow;
             bool viewing = ViewingImage(now);
-            bool busy = cards.Values.Any(c => c.Busy);
+            bool busy = VisibleCards().Any(c => c.Busy);
             if (!nearTop) suppressEdge = false;
             if (nearTop && down && !previousDown && !over && !viewing)
             {
@@ -817,11 +833,12 @@ namespace ScreenLine
             WindowsNative.PassMouse(Handle, !Revealed || (!over && !busy));
             if (!Revealed) return;
             if (!rendering && NeedsRendering) StartRendering();
-            if (cards.Count > 0 && Math.Abs(scrollMotion.Velocity) < 8 && Math.Abs(scrollMotion.Target - viewport.HorizontalOffset) < 0.5 && !busy && now >= nextGust)
+            var visibleCards = VisibleCards().ToArray();
+            if (visibleCards.Length > 0 && Math.Abs(scrollMotion.Velocity) < 8 && Math.Abs(scrollMotion.Target - viewport.HorizontalOffset) < 0.5 && !busy && now >= nextGust)
             {
                 nextGust = now.AddSeconds(7 + random.NextDouble() * 17);
                 int direction = random.Next(2) == 0 ? -1 : 1;
-                foreach (var card in cards.Values) card.Breeze(random.NextDouble() * 0.35, direction * (1.6 + random.NextDouble() * 1.8));
+                foreach (var card in visibleCards) card.Breeze(random.NextDouble() * 0.35, direction * (1.6 + random.NextDouble() * 1.8));
                 StartRendering();
             }
             WindowsNative.Rectangle bounds;
@@ -838,6 +855,27 @@ namespace ScreenLine
 
         public void ShowCopied(string path) { if (cards.ContainsKey(path)) cards[path].FlashCopied(); }
         internal ShotCard CardFor(string path) { return cards[path]; }
+        void SyncCardVisibility()
+        {
+            double width = viewport.ViewportWidth > 0 ? viewport.ViewportWidth : PhotoWidth;
+            double left = viewport.HorizontalOffset - 24, right = viewport.HorizontalOffset + width + 24;
+            foreach (var card in cards.Values)
+            {
+                bool visible = !card.Detached && card.VisualRight >= left && card.VisualLeft <= right;
+                var value = visible ? Visibility.Visible : Visibility.Collapsed;
+                if (card.Visibility != value) card.Visibility = value;
+            }
+        }
+        IEnumerable<ShotCard> VisibleCards()
+        {
+            double width = viewport.ViewportWidth > 0 ? viewport.ViewportWidth : PhotoWidth;
+            double left = viewport.HorizontalOffset - 24, right = viewport.HorizontalOffset + width + 24;
+            foreach (var card in cards.Values)
+            {
+                if (card.IsDisposed || card.Detached) continue;
+                if (card.VisualRight >= left && card.VisualLeft <= right) yield return card;
+            }
+        }
         internal IEnumerable<ShotFlight> MotionWindows { get { return flights; } }
         internal IEnumerable<PinnedImageWindow> PinWindows { get { return pins.Values; } }
         internal bool Animating { get { return rendering; } }
@@ -856,7 +894,7 @@ namespace ScreenLine
         readonly Button close = new Button();
         readonly Border copied = new Border();
         readonly RotateTransform tilt = new RotateTransform(0, 82, 8);
-        Point position;
+        readonly TranslateTransform place = new TranslateTransform();
         readonly ScaleTransform photoScale = new ScaleTransform(1, 1);
         readonly SpringMotion xMotion = new SpringMotion(0.55, 0.78, 0);
         readonly SpringMotion drop = new SpringMotion(0.42, 0.72, -46) { Target = 0 };
@@ -870,6 +908,7 @@ namespace ScreenLine
         Point start;
         bool pressed, held, dragging, placed, hovering, gripHover;
         double entryTime, breezeDelay = -1, breezeAngle;
+        double lastSag = double.NaN, lastLineWidth = double.NaN, lastScrollOffset = double.NaN;
         ImageContent displayed;
         public bool Busy { get { return pressed || dragging || Releasing || menu.IsOpen; } }
         internal bool Animating
@@ -889,6 +928,9 @@ namespace ScreenLine
         public LineTheme Appearance { get; private set; }
         public int ColorIndex { get; private set; }
         internal double MountX { get { return xMotion.Target; } }
+        internal double VisualLeft { get { return Math.Min(xMotion.Position, xMotion.Target); } }
+        internal double VisualRight { get { return Math.Max(xMotion.Position, xMotion.Target) + Width; } }
+        internal double CurrentTilt { get { return tilt.Angle; } }
 
         public ShotCard(CaptureItem item, Action<ShotAction, CaptureItem> act, Gallery gallery, Func<CaptureItem[]> hangingItems)
         {
@@ -897,7 +939,10 @@ namespace ScreenLine
             this.act = act;
             Width = 164;
             Height = 178;
-            RenderTransform = tilt;
+            var transform = new TransformGroup();
+            transform.Children.Add(tilt);
+            transform.Children.Add(place);
+            RenderTransform = transform;
             CacheMode = new BitmapCache();
             Tilt = (item.Path.GetHashCode() & 7) * 0.7 - 2.45;
             Opacity = 0;
@@ -1017,29 +1062,42 @@ namespace ScreenLine
         public void Frame(double elapsed, double sag, double lineWidth, double scrollOffset)
         {
             if (IsDisposed) return;
-            xMotion.Step(elapsed);
-            drop.Step(elapsed);
-            swing.Step(elapsed);
-            if (breezeDelay >= 0)
+            bool animating = Animating;
+            bool followsLine = Math.Abs(lastSag - sag) > 0.001 || Math.Abs(lastLineWidth - lineWidth) > 0.001
+                || Math.Abs(lastScrollOffset - scrollOffset) > 0.001
+                || place.X != xMotion.Position;
+            if (!animating && !followsLine) return;
+            lastSag = sag;
+            lastLineWidth = lineWidth;
+            lastScrollOffset = scrollOffset;
+            if (animating)
             {
-                breezeDelay -= elapsed;
-                if (breezeDelay < 0 && !Flying && !Busy) Nudge(breezeAngle);
+                xMotion.Step(elapsed);
+                drop.Step(elapsed);
+                swing.Step(elapsed);
+                if (breezeDelay >= 0)
+                {
+                    breezeDelay -= elapsed;
+                    if (breezeDelay < 0)
+                    {
+                        breezeDelay = -1;
+                        if (!Flying && !Busy) Nudge(breezeAngle);
+                    }
+                }
+                scaleMotion.Target = pressed ? 0.95 : (hovering && !Releasing ? 1.035 : 1);
+                scaleMotion.Step(elapsed);
+                clipMotion.Target = gripHover || Releasing ? 1 : 0;
+                clipMotion.Step(elapsed);
+                entryTime += elapsed;
+                Opacity = Flying ? 0 : Math.Min(1, entryTime / 0.16);
             }
-            scaleMotion.Target = pressed ? 0.95 : (hovering && !Releasing ? 1.035 : 1);
-            scaleMotion.Step(elapsed);
-            clipMotion.Target = gripHover || Releasing ? 1 : 0;
-            clipMotion.Step(elapsed);
             clipLift.Y = -0.8 * clipMotion.Position;
             clipScale.ScaleX = clipScale.ScaleY = 1 + 0.06 * clipMotion.Position;
             photoScale.ScaleX = photoScale.ScaleY = scaleMotion.Position;
             double fraction = Math.Max(0, Math.Min(1, (xMotion.Position + 82 - scrollOffset) / lineWidth));
-            position.X = xMotion.Position;
-            position.Y = 18 + 4 * sag * fraction * (1 - fraction) - 8 + drop.Position;
-            Canvas.SetLeft(this, position.X);
-            Canvas.SetTop(this, position.Y);
+            place.X = xMotion.Position;
+            place.Y = 18 + 4 * sag * fraction * (1 - fraction) - 8 + drop.Position;
             tilt.Angle = Tilt + swing.Position;
-            entryTime += elapsed;
-            Opacity = Flying ? 0 : Math.Min(1, entryTime / 0.16);
         }
 
         public void Breeze(double delay, double degrees) { breezeDelay = delay; breezeAngle = degrees; }
@@ -1089,8 +1147,11 @@ namespace ScreenLine
         public Rect PhotoRect()
         {
             var parent = (Canvas)Parent;
-            double x = position.X + (Width - Surface.Width) / 2, y = position.Y + 20;
-            return new Rect(parent.PointToScreen(new Point(x, y)), parent.PointToScreen(new Point(x + Surface.Width, y + Surface.Height)));
+            double width = Surface.Width, height = Surface.Height;
+            if (double.IsNaN(width) || width <= 0) width = Surface.ActualWidth;
+            if (double.IsNaN(height) || height <= 0) height = Surface.ActualHeight;
+            var bounds = Surface.TransformToAncestor(parent).TransformBounds(new Rect(0, 0, width, height));
+            return new Rect(parent.PointToScreen(bounds.TopLeft), parent.PointToScreen(bounds.BottomRight));
         }
 
         void Down(object sender, MouseButtonEventArgs e)
@@ -1141,8 +1202,12 @@ namespace ScreenLine
 
     internal sealed class DragPreview : Window
     {
-        readonly DispatcherTimer follow = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(25) };
+        readonly DispatcherTimer follow = new DispatcherTimer(DispatcherPriority.Render) { Interval = TimeSpan.FromMilliseconds(16) };
+        readonly EventHandler followFrame;
         IntPtr handle;
+        int lastX = int.MinValue, lastY = int.MinValue, shownWidth, shownHeight;
+        Forms.Screen lastScreen;
+        double lastScale = 1;
 
         public DragPreview(System.Windows.Media.Imaging.BitmapSource image)
         {
@@ -1158,23 +1223,40 @@ namespace ScreenLine
             IsHitTestVisible = false;
             Opacity = 0.8;
             Content = new Border { CornerRadius = new CornerRadius(10), Background = Brushes.White, Padding = new Thickness(6), Child = new Image { Source = image } };
+            followFrame = delegate { Follow(); };
             SourceInitialized += delegate
             {
                 handle = new WindowInteropHelper(this).Handle;
                 WindowsNative.PrepareOverlay(handle);
                 WindowsNative.PassMouse(handle, true);
                 Follow();
+                // 按显示器刷新节奏跟随（通常 60Hz 以上）；16ms 渲染优先级定时器
+                // 在无合成帧时兜底，Follow 内部按位置去重，两路不会重复移动窗口。
+                CompositionTarget.Rendering += followFrame;
                 follow.Start();
             };
             follow.Tick += delegate { Follow(); };
-            Closed += delegate { follow.Stop(); };
+            Closed += delegate { CompositionTarget.Rendering -= followFrame; follow.Stop(); };
         }
 
         void Follow()
         {
+            if (handle == IntPtr.Zero) return;
             var cursor = WindowsNative.Cursor();
-            double scale = WindowsNative.MonitorScale(WindowsNative.ScreenAtPointer());
-            WindowsNative.SetWindowPos(handle, new IntPtr(-1), cursor.X + 18, cursor.Y + 20, (int)(Width * scale), (int)(Height * scale), 0x10);
+            if (lastScreen == null || cursor.X < lastScreen.Bounds.Left || cursor.X >= lastScreen.Bounds.Right
+                || cursor.Y < lastScreen.Bounds.Top || cursor.Y >= lastScreen.Bounds.Bottom)
+            {
+                lastScreen = WindowsNative.ScreenAtPointer();
+                lastScale = WindowsNative.MonitorScale(lastScreen);
+                shownWidth = shownHeight = 0;
+            }
+            int x = cursor.X + 18, y = cursor.Y + 20;
+            int width = (int)(Width * lastScale), height = (int)(Height * lastScale);
+            bool resized = width != shownWidth || height != shownHeight;
+            if (!resized && x == lastX && y == lastY) return;
+            lastX = x; lastY = y; shownWidth = width; shownHeight = height;
+            // 尺寸不变时带上 NOSIZE（0x1），避免每次移动都走一遍窗口缩放。
+            WindowsNative.SetWindowPos(handle, new IntPtr(-1), x, y, width, height, resized ? 0x10u : 0x11u);
         }
     }
 }

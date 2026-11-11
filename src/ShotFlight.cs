@@ -22,6 +22,11 @@ namespace ScreenLine
         readonly ScaleTransform resize = new ScaleTransform(), clipScale = new ScaleTransform();
         readonly TranslateTransform travel = new TranslateTransform();
         readonly DropShadowEffect shadow = new DropShadowEffect { BlurRadius = 14, ShadowDepth = 4 };
+        // 复用画刷与裁剪几何，避免飞行途中每帧新建对象、触发额外的布局与回收。
+        readonly SolidColorBrush paperBrush = new SolidColorBrush(Color.FromArgb(0, 255, 255, 255));
+        readonly RectangleGeometry photoClip = new RectangleGeometry();
+        readonly RectangleGeometry frameClip = new RectangleGeometry();
+        double styledRounding = -1;
         readonly Stopwatch clock = new Stopwatch();
         readonly Action landed;
         readonly Func<Rect> basketTarget;
@@ -64,6 +69,8 @@ namespace ScreenLine
             else frame.RenderTransform = turn;
             photo.Source = image ?? card.Item.Image.Thumbnail;
             photo.Stretch = Stretch.Fill;
+            if (!Collecting) photo.Clip = photoClip;
+            border.Background = paperBrush;
             border.Child = photo;
             border.BorderBrush = new SolidColorBrush(Color.FromRgb(220, 225, 233));
             border.Effect = shadow;
@@ -106,10 +113,11 @@ namespace ScreenLine
                 if (captureRenderer != null && captureRenderer.Failure == null)
                 { clock.Restart(); captureRenderer.UpdateTarget(Local(card.PhotoRect()), 0); Hide(); captureRenderer.Start(); }
             };
+            // 关闭时窗口先与显示源断开、之后才触发 Closed；在 Closing 就退订，避免间隙里的渲染回调访问已断开的窗口。
+            Closing += delegate { CompositionTarget.Rendering -= Render; };
             Closed += delegate
             {
                 if (captureRenderer != null) captureRenderer.Dispose();
-                CompositionTarget.Rendering -= Render;
                 Complete();
             };
         }
@@ -188,13 +196,22 @@ namespace ScreenLine
             }
             turn.CenterX = width / 2;
             turn.CenterY = -12;
-            border.Background = new SolidColorBrush(Color.FromArgb((byte)(245 * chrome), 255, 255, 255));
-            border.BorderThickness = new Thickness(chrome / scaleX, chrome / scaleY, chrome / scaleX, chrome / scaleY);
+            paperBrush.Color = Color.FromArgb((byte)(245 * chrome), 255, 255, 255);
             double rounding = Falling ? 1 : ease;
-            border.CornerRadius = new CornerRadius(12 * rounding / Math.Max(scaleX, scaleY));
-            photo.Margin = new Thickness(6 * rounding / scaleX, 6 * rounding / scaleY, 6 * rounding / scaleX, 6 * rounding / scaleY);
-            photo.Clip = new RectangleGeometry(new Rect(0, 0, Math.Max(1, frame.Width - photo.Margin.Left * 2 - border.BorderThickness.Left * 2), Math.Max(1, frame.Height - photo.Margin.Top * 2 - border.BorderThickness.Top * 2)), 7 * rounding / scaleX, 7 * rounding / scaleY);
-            shadow.BlurRadius = 14 / Math.Max(scaleX, scaleY); shadow.ShadowDepth = 4 / scaleY;
+            // 边距、边框、圆角和裁剪会触发布局，按 1/20 步进更新即可保持观感，
+            // 其余帧只更新变换与透明度，避免飞行途中每帧都走一遍布局。
+            double roundingStep = Math.Round(rounding * 20) / 20;
+            if (roundingStep != styledRounding)
+            {
+                styledRounding = roundingStep;
+                border.BorderThickness = new Thickness(chrome / scaleX, chrome / scaleY, chrome / scaleX, chrome / scaleY);
+                border.CornerRadius = new CornerRadius(12 * roundingStep / Math.Max(scaleX, scaleY));
+                photo.Margin = new Thickness(6 * roundingStep / scaleX, 6 * roundingStep / scaleY, 6 * roundingStep / scaleX, 6 * roundingStep / scaleY);
+                photoClip.Rect = new Rect(0, 0, Math.Max(1, frame.Width - photo.Margin.Left * 2 - border.BorderThickness.Left * 2), Math.Max(1, frame.Height - photo.Margin.Top * 2 - border.BorderThickness.Top * 2));
+                photoClip.RadiusX = 7 * roundingStep / scaleX; photoClip.RadiusY = 7 * roundingStep / scaleY;
+            }
+            // 阴影参数量化到 0.5，减少效果层的重复渲染次数。
+            shadow.BlurRadius = Math.Round(28 / Math.Max(scaleX, scaleY)) / 2; shadow.ShadowDepth = Math.Round(8 / scaleY) / 2;
             shadow.Opacity = 0.2 * chrome;
             clip.Opacity = chrome;
             clipScale.ScaleX = 1 / scaleX; clipScale.ScaleY = 1 / scaleY;
@@ -225,7 +242,7 @@ namespace ScreenLine
             Canvas.SetLeft(frame, x - width / 2); Canvas.SetTop(frame, top);
             turn.CenterX = width / 2; turn.CenterY = height / 2;
             turn.Angle = card.Tilt * (1 - ease) + Math.Sign(endX - startX) * 10 * Math.Sin(Math.PI * ease);
-            border.Background = Brushes.White; border.BorderThickness = new Thickness(1);
+            paperBrush.Color = Colors.White; border.BorderThickness = new Thickness(1);
             border.CornerRadius = new CornerRadius(Math.Min(9, width * 0.09));
             photo.Margin = new Thickness(Math.Min(6, width * 0.04));
             shadow.Opacity = 0.16 * (1 - ease); clip.Opacity = 0;
@@ -233,7 +250,10 @@ namespace ScreenLine
             frame.Clip = null;
             // 图片跨过篮口后逐渐被篮身遮住，而不是在篮子前方淡出。
             if (progress > 0.68 && Math.Abs(x - endX) < mouth.Width * 0.6)
-                frame.Clip = new RectangleGeometry(new Rect(0, 0, width, Math.Max(0, Math.Min(height, mouth.Y - top))));
+            {
+                frameClip.Rect = new Rect(0, 0, width, Math.Max(0, Math.Min(height, mouth.Y - top)));
+                frame.Clip = frameClip;
+            }
             if (progress < 1) return;
             arrived = true; Complete(); Close();
         }

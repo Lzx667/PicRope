@@ -43,6 +43,8 @@ PicRope 将截图暂存在屏幕上沿，单击复制、拖拽取用，也可以
 
 **系统要求：** Windows 10 / 11 64 位、.NET Framework 4.8；内置编辑器需要 [Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)。
 
+图片绳默认使用硬件渲染，以减少图片较多时的滚动和拖拽掉帧。若个别旧显卡驱动下出现画面异常，先退出图绳，再在命令行运行 `PicRope.exe --software-render` 回退到软件渲染。
+
 > 使用 `Win+Shift+S`、`PrtScn` 或微信 `Alt+A` 时，在托盘右键菜单 →「剪贴板收集」中开启「图片」。图片与文字的剪贴板收集独立控制，默认都关闭。
 
 开启图片收集后，也可收集复制的图片内容。图文混排和资源管理器中复制的文件不会自动收集，本地图片可以通过「添加图片」手动加入。

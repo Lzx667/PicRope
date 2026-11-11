@@ -34,6 +34,8 @@ namespace ScreenLine
         Point anchor, moveStart, anchorStart;
         double pictureScale, dropStarted = -1;
         int placedLeft = int.MinValue, placedTop = int.MinValue, placedWidth, placedHeight;
+        Forms.Screen positionScreen;
+        double positionScale = 1;
         bool moving, rendering, returning;
         public Rect ReturnBounds { get; private set; }
         public BitmapSource Picture { get { return bitmap; } }
@@ -234,8 +236,20 @@ namespace ScreenLine
 
         void Position()
         {
-            var screen = IsHitTestVisible ? Forms.Screen.FromPoint(new System.Drawing.Point((int)anchor.X, (int)anchor.Y)) : display;
-            double dpi = IsHitTestVisible ? WindowsNative.MonitorScale(screen) : displayScale;
+            // 拖动时每个鼠标移动都会走到这里：锚点还在同一块屏幕内时复用已查到的
+            // 屏幕与缩放，只有跨屏才重新查询，避免拖动途中反复做系统调用。
+            Forms.Screen screen;
+            double dpi;
+            if (!IsHitTestVisible) { screen = display; dpi = displayScale; }
+            else if (positionScreen != null && anchor.X >= positionScreen.Bounds.Left && anchor.X < positionScreen.Bounds.Right
+                && anchor.Y >= positionScreen.Bounds.Top && anchor.Y < positionScreen.Bounds.Bottom)
+            { screen = positionScreen; dpi = positionScale; }
+            else
+            {
+                screen = Forms.Screen.FromPoint(new System.Drawing.Point((int)anchor.X, (int)anchor.Y));
+                dpi = WindowsNative.MonitorScale(screen);
+                positionScreen = screen; positionScale = dpi;
+            }
             int width = (int)Math.Round(Width * dpi), height = (int)Math.Round(Height * dpi);
             int left = (int)Math.Round(anchor.X - width / 2.0), top = (int)Math.Round(anchor.Y - 17 * dpi);
             if (IsHitTestVisible)

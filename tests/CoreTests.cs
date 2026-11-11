@@ -83,6 +83,34 @@ namespace ScreenLine.Tests
                     Check(actual[0] == 20 && actual[3] == 255 && actual[4] == 30 && actual[7] == 255);
                 }
             });
+            Run("复制 PNG 原图时直接复用文件字节", delegate
+            {
+                byte[] file = ImageContent.EncodeClipboard(Picture(30));
+                var decoder = BitmapDecoder.Create(new MemoryStream(file), BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad);
+                Check(ReferenceEquals(ImageContent.ClipboardPng(decoder, file), file));
+            });
+            Run("复制非 PNG 图片时仍提供 PNG 数据", delegate
+            {
+                var encoder = new BmpBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(Picture(30)));
+                byte[] file;
+                using (var memory = new MemoryStream()) { encoder.Save(memory); file = memory.ToArray(); }
+                var decoder = BitmapDecoder.Create(new MemoryStream(file), BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad);
+                byte[] png = ImageContent.ClipboardPng(decoder, file);
+                Check(BitmapDecoder.Create(new MemoryStream(png), BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad) is PngBitmapDecoder);
+                Check(ImageContent.Decode(png).Fingerprint == ImageContent.HashPixels(Picture(30)));
+            });
+            Run("复制全零透明通道的 PNG 时仍转成不透明图片", delegate
+            {
+                byte[] pixels = { 20, 40, 60, 0, 30, 50, 70, 0 };
+                var raw = new PngBitmapEncoder(); raw.Frames.Add(BitmapFrame.Create(BitmapSource.Create(2, 1, 96, 96, PixelFormats.Bgra32, null, pixels, 8)));
+                byte[] file;
+                using (var memory = new MemoryStream()) { raw.Save(memory); file = memory.ToArray(); }
+                var decoder = BitmapDecoder.Create(new MemoryStream(file), BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad);
+                byte[] png = ImageContent.ClipboardPng(decoder, file);
+                var decoded = new FormatConvertedBitmap(BitmapDecoder.Create(new MemoryStream(png), BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad).Frames[0], PixelFormats.Bgra32, null, 0);
+                var actual = new byte[8]; decoded.CopyPixels(actual, 8, 0);
+                Check(actual[0] == 20 && actual[3] == 255 && actual[4] == 30 && actual[7] == 255);
+            });
             Run("同一次截图的两个来源只收一次", delegate
             {
                 var ledger = new CaptureReceipts();

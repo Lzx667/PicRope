@@ -47,10 +47,11 @@ namespace ScreenLine
         public static Style ButtonStyle { get { return (Style)styles["Action"]; } }
         public static Style HintStyle { get { return (Style)styles["Hint"]; } }
         public static SolidColorBrush Brush(string value) { return (SolidColorBrush)new BrushConverter().ConvertFromString(value); }
-        public static void Install(Application app)
+        public static void Install(Application app, bool softwareRendering = false)
         {
-            // 小型透明挂件使用软件绘制，避免反复开关面板积累大块图形缓存。
-            RenderOptions.ProcessRenderMode = System.Windows.Interop.RenderMode.SoftwareOnly;
+            // 默认走 WPF 硬件合成；仅在驱动异常时通过 --software-render 显式回退。
+            if (softwareRendering)
+                RenderOptions.ProcessRenderMode = System.Windows.Interop.RenderMode.SoftwareOnly;
             app.Resources[typeof(ToolTip)] = styles["Hint"];
         }
 

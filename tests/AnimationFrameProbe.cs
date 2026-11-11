@@ -63,6 +63,7 @@ namespace ScreenLine.Tests
                             if (snapshots) break;
                         }
                         if (count == 49 || snapshots) CheckFlightDetail(gallery);
+                        if (count == 49 || snapshots) { CheckClosingRender(gallery); await CheckHoverWake(gallery); }
                         if (count == 49) await CheckCaptureLifecycle(gallery);
                         shelf.Reveal(false, false, 0); await Task.Delay(350);
                         Check(!shelf.Animating && !shelf.MotionWindows.Any(), "收起后停止动画并清理飞行窗口");
@@ -306,6 +307,46 @@ namespace ScreenLine.Tests
                 Check(error < 60, "大图飞行缓存保留原始细线，像素平均误差：" + error);
             }
             finally { flight.Close(); gallery.Remove(item); }
+        }
+
+        // 窗口关闭时先与显示源断开、之后才触发 Closed；这段间隙里出现的渲染回调不能再访问飞行窗口。
+        static void CheckClosingRender(Gallery gallery)
+        {
+            string path = Picture(gallery.Store.Root, "closing-flight", 320, 180);
+            gallery.Add(path, ImageContent.Read(path, false));
+            var item = gallery.Items.Last(); var card = shelf.CardFor(path); card.BeginFlight();
+            var screen = shelf.Display.Bounds;
+            var flight = new ShotFlight(shelf.Display, card, new Rect(screen.Left + 200, screen.Top + 400, 320, 180), false, card.Land, item.Image.Thumbnail);
+            var other = new Window { Width = 200, Height = 100, WindowStyle = WindowStyle.None, ShowActivated = false, ShowInTaskbar = false };
+            Exception failure = null;
+            System.Windows.Threading.DispatcherUnhandledExceptionEventHandler record = delegate(object sender, System.Windows.Threading.DispatcherUnhandledExceptionEventArgs args) { failure = args.Exception; args.Handled = true; };
+            Application.Current.DispatcherUnhandledException += record;
+            try
+            {
+                other.Show(); flight.Show();
+                bool resized = false;
+                HwndSource.FromHwnd(new WindowInteropHelper(flight).Handle).AddHook(delegate(IntPtr window, int message, IntPtr w, IntPtr l, ref bool handled)
+                {
+                    // 0x0002 = WM_DESTROY：此时 Closing 已触发、Closed 尚未触发，改动另一个窗口的尺寸会立即引发一次渲染回调。
+                    if (message == 0x0002 && !resized) { resized = true; other.Width = 240; other.UpdateLayout(); }
+                    return IntPtr.Zero;
+                });
+                flight.Close();
+                Check(resized && failure == null, "关闭途中的渲染回调不访问已断开的飞行窗口：" + failure);
+            }
+            finally { Application.Current.DispatcherUnhandledException -= record; other.Close(); gallery.Remove(item); }
+        }
+
+        // 悬停缩放由逐帧刷新驱动，鼠标移入后应立即开始刷新，而不是等下一次指针轮询。
+        static async Task CheckHoverWake(Gallery gallery)
+        {
+            for (int i = 0; i < 200 && shelf.Animating; i++) await Task.Delay(50);
+            Check(!shelf.Animating, "悬停验证前图绳处于静止状态");
+            var surface = shelf.CardFor(gallery.Items.Last().Path).Surface;
+            surface.RaiseEvent(new System.Windows.Input.MouseEventArgs(System.Windows.Input.Mouse.PrimaryDevice, Environment.TickCount) { RoutedEvent = System.Windows.Input.Mouse.MouseEnterEvent });
+            bool woke = shelf.Animating;
+            surface.RaiseEvent(new System.Windows.Input.MouseEventArgs(System.Windows.Input.Mouse.PrimaryDevice, Environment.TickCount) { RoutedEvent = System.Windows.Input.Mouse.MouseLeaveEvent });
+            Check(woke, "鼠标移入卡片后立即开始逐帧刷新");
         }
 
         static async Task CheckCaptureLifecycle(Gallery gallery)

@@ -384,14 +384,13 @@ namespace ScreenLine
                         break;
                     case ShotAction.Copy:
                         var payload = new DataObject();
-                        byte[] png;
+                        byte[] file;
                         using (var stream = new FileStream(item.Path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
-                        {
-                            var image = BitmapDecoder.Create(stream, BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad).Frames[0];
-                            payload.SetImage(image);
-                            png = ImageContent.EncodeClipboard(image);
-                        }
-                        payload.SetData("PNG", new MemoryStream(png));
+                            file = WindowsClipboard.ReadImageBytes(stream);
+                        var decoder = BitmapDecoder.Create(new MemoryStream(file), BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad);
+                        // 只登记位图一种格式：SetImage 还会附带两种仅 .NET 程序识别的格式，写入剪贴板时各自再整图转换一遍。
+                        payload.SetData(DataFormats.Bitmap, decoder.Frames[0], false);
+                        payload.SetData("PNG", new MemoryStream(ImageContent.ClipboardPng(decoder, file)));
                         payload.SetFileDropList(new StringCollection { item.Path });
                         payload.SetData(ClipboardRules.OwnFormat, "1");
                         await WindowsClipboard.Write(payload);
@@ -504,7 +503,7 @@ namespace ScreenLine
                 if (!first) { WindowsNative.ShowExisting(); return; }
                 var store = new StateStore(StateStore.DefaultRoot);
                 var app = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
-                LightTheme.Install(app);
+                LightTheme.Install(app, Array.IndexOf(arguments, "--software-render") >= 0);
                 DesktopController controller = null;
                 app.DispatcherUnhandledException += delegate(object sender, System.Windows.Threading.DispatcherUnhandledExceptionEventArgs args) { store.Log(args.Exception); args.Handled = true; };
                 app.Startup += async delegate { controller = new DesktopController(store, WindowsNative.ScreenshotFolder()); await controller.Start(); };

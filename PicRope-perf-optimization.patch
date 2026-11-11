@@ -1,0 +1,252 @@
+diff --git a/src/CaptureFlightRenderer.cs b/src/CaptureFlightRenderer.cs
+index 3d217ca..9c46496 100644
+--- a/src/CaptureFlightRenderer.cs
++++ b/src/CaptureFlightRenderer.cs
+@@ -173,12 +173,16 @@ namespace ScreenLine
+                     while (PeekMessage(out message, IntPtr.Zero, 0, 0, 1)) { TranslateMessage(ref message); DispatchMessage(ref message); }
+                     double now = seconds();
+                     long began = Stopwatch.GetTimestamp();
+-                    lock (gate) Draw(now);
++                    Gdi.Rectangle frameRect;
++                    lock (gate) frameRect = Draw(now);
+                     long drawn = Stopwatch.GetTimestamp();
+-                    var offset = new Point();
++                    if (frameRect.Width <= 0 || frameRect.Height <= 0) frameRect = new Gdi.Rectangle(0, 0, width, height);
++                    var offset = new Point { X = frameRect.X, Y = frameRect.Y };
+                     var blend = new Blend { Alpha = (byte)(255 * Math.Max(0, 1 - Math.Max(0, now - 0.65) / 0.16)), Format = 1 };
+-                    var position = new Point { X = left, Y = top }; var size = new LayerSize { Width = width, Height = height };
+-                    // 每帧连同完整尺寸提交，确保桌面合成器刷新图像内容。
++                    var position = new Point { X = left + frameRect.X, Y = top + frameRect.Y };
++                    var size = new LayerSize { Width = frameRect.Width, Height = frameRect.Height };
++                    // 只提交本帧发生变化的区域（上一帧位置已被清除、新位置已绘入，取两者并集），
++                    // 避免每帧把整屏位图上传给桌面合成器；首帧因 dirty 初始为全屏仍会完整提交一次。
+                     bool updatedLayer = UpdateLayeredWindow(window, IntPtr.Zero, ref position, ref size, dc, ref offset, 0, ref blend, 2);
+                     if (!updatedLayer)
+                     { if (stopped) break; throw new System.ComponentModel.Win32Exception(); }
+@@ -209,7 +213,7 @@ namespace ScreenLine
+             }
+         }
+ 
+-        void Draw(double now)
++        Gdi.Rectangle Draw(double now)
+         {
+             double progress = Math.Min(1, now / 0.65);
+             double ease = progress * progress * progress * (10 + progress * (-15 + 6 * progress));
+@@ -269,9 +273,14 @@ namespace ScreenLine
+             if (!AlphaBlend(dc, destination.X, destination.Y, destination.Width, destination.Height, rotatedDc,
+                 64 - padX, 64 - padY, spriteWidth + 2 * padX, spriteHeight + 2 * padY, blend)) throw new System.ComponentModel.Win32Exception();
+             GdiFlush();
+-            dirty = Gdi.Rectangle.Intersect(destination, new Gdi.Rectangle(0, 0, width, height));
++            var screen = new Gdi.Rectangle(0, 0, width, height);
++            var drawn = Gdi.Rectangle.Intersect(destination, screen);
++            // 本帧需要呈现的区域 = 上一帧画面所在区域（已在上方 PatBlt 清除）∪ 本帧新画面区域。
++            var present = Gdi.Rectangle.Union(dirty, drawn);
++            dirty = drawn;
+             double sampleX = w * 0.8 - w / 2, sampleY = h * 0.65 + 12;
+             samplePoint = new System.Windows.Point(x + w / 2 + cosine * sampleX - sine * sampleY, y - 12 + sine * sampleX + cosine * sampleY);
++            return present.IsEmpty ? screen : present;
+         }
+ 
+         static Gdi2D.GraphicsPath Rounded(double x, double y, double width, double height, double radius)
+diff --git a/src/PinnedImageWindow.cs b/src/PinnedImageWindow.cs
+index 0396b50..a72a495 100644
+--- a/src/PinnedImageWindow.cs
++++ b/src/PinnedImageWindow.cs
+@@ -34,6 +34,8 @@ namespace ScreenLine
+         Point anchor, moveStart, anchorStart;
+         double pictureScale, dropStarted = -1;
+         int placedLeft = int.MinValue, placedTop = int.MinValue, placedWidth, placedHeight;
++        Forms.Screen positionScreen;
++        double positionScale = 1;
+         bool moving, rendering, returning;
+         public Rect ReturnBounds { get; private set; }
+         public BitmapSource Picture { get { return bitmap; } }
+@@ -234,8 +236,20 @@ namespace ScreenLine
+ 
+         void Position()
+         {
+-            var screen = IsHitTestVisible ? Forms.Screen.FromPoint(new System.Drawing.Point((int)anchor.X, (int)anchor.Y)) : display;
+-            double dpi = IsHitTestVisible ? WindowsNative.MonitorScale(screen) : displayScale;
++            // 拖动时每个鼠标移动都会走到这里：锚点还在同一块屏幕内时复用已查到的
++            // 屏幕与缩放，只有跨屏才重新查询，避免拖动途中反复做系统调用。
++            Forms.Screen screen;
++            double dpi;
++            if (!IsHitTestVisible) { screen = display; dpi = displayScale; }
++            else if (positionScreen != null && anchor.X >= positionScreen.Bounds.Left && anchor.X < positionScreen.Bounds.Right
++                && anchor.Y >= positionScreen.Bounds.Top && anchor.Y < positionScreen.Bounds.Bottom)
++            { screen = positionScreen; dpi = positionScale; }
++            else
++            {
++                screen = Forms.Screen.FromPoint(new System.Drawing.Point((int)anchor.X, (int)anchor.Y));
++                dpi = WindowsNative.MonitorScale(screen);
++                positionScreen = screen; positionScale = dpi;
++            }
+             int width = (int)Math.Round(Width * dpi), height = (int)Math.Round(Height * dpi);
+             int left = (int)Math.Round(anchor.X - width / 2.0), top = (int)Math.Round(anchor.Y - 17 * dpi);
+             if (IsHitTestVisible)
+diff --git a/src/ShelfWindow.cs b/src/ShelfWindow.cs
+index 0166fb2..b174051 100644
+--- a/src/ShelfWindow.cs
++++ b/src/ShelfWindow.cs
+@@ -30,6 +30,8 @@ namespace ScreenLine
+         readonly Canvas content = new Canvas();
+         readonly Canvas line = new Canvas();
+         readonly System.Windows.Shapes.Path rope = new System.Windows.Shapes.Path();
++        readonly PathGeometry ropeGeometry = new PathGeometry();
++        readonly QuadraticBezierSegment ropeCurve = new QuadraticBezierSegment();
+         readonly LinearGradientBrush edgeMask = new LinearGradientBrush(new GradientStopCollection {
+             new GradientStop(Colors.White, 0), new GradientStop(Colors.White, 0.03),
+             new GradientStop(Colors.White, 0.97), new GradientStop(Colors.White, 1)
+@@ -414,11 +416,16 @@ namespace ScreenLine
+             if (Math.Abs(drawnWidth - LineWidth) < 0.01 && Math.Abs(drawnSag - ropeMotion.Position) < 0.01) return;
+             drawnWidth = LineWidth;
+             drawnSag = ropeMotion.Position;
+-            var geometry = new PathGeometry();
+-            var shape = new PathFigure { StartPoint = new Point(0, 18) };
+-            shape.Segments.Add(new QuadraticBezierSegment(new Point(drawnWidth / 2, 18 + 2 * drawnSag), new Point(drawnWidth, 18), true));
+-            geometry.Figures.Add(shape);
+-            rope.Data = geometry;
++            // 复用同一条曲线，只改控制点，避免绳子摆动时每帧新建整套几何对象。
++            if (rope.Data == null)
++            {
++                var shape = new PathFigure { StartPoint = new Point(0, 18) };
++                shape.Segments.Add(ropeCurve);
++                ropeGeometry.Figures.Add(shape);
++                rope.Data = ropeGeometry;
++            }
++            ropeCurve.Point1 = new Point(drawnWidth / 2, 18 + 2 * drawnSag);
++            ropeCurve.Point2 = new Point(drawnWidth, 18);
+             Point hook = PictureBasket.Hook(Appearance);
+             double fraction = (PhotoWidth + AccessoryWidth - 156 + 22 + hook.X) / LineWidth;
+             double offset = 4 * drawnSag * fraction * (1 - fraction);
+@@ -1142,7 +1149,11 @@ namespace ScreenLine
+     internal sealed class DragPreview : Window
+     {
+         readonly DispatcherTimer follow = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(25) };
++        readonly EventHandler followFrame;
+         IntPtr handle;
++        int lastX = int.MinValue, lastY = int.MinValue, shownWidth, shownHeight;
++        Forms.Screen lastScreen;
++        double lastScale = 1;
+ 
+         public DragPreview(System.Windows.Media.Imaging.BitmapSource image)
+         {
+@@ -1158,23 +1169,40 @@ namespace ScreenLine
+             IsHitTestVisible = false;
+             Opacity = 0.8;
+             Content = new Border { CornerRadius = new CornerRadius(10), Background = Brushes.White, Padding = new Thickness(6), Child = new Image { Source = image } };
++            followFrame = delegate { Follow(); };
+             SourceInitialized += delegate
+             {
+                 handle = new WindowInteropHelper(this).Handle;
+                 WindowsNative.PrepareOverlay(handle);
+                 WindowsNative.PassMouse(handle, true);
+                 Follow();
++                // 按显示器刷新节奏跟随（通常 60Hz 以上），比 25ms 定时器跟手；
++                // 定时器保留作兜底，Follow 内部按位置去重，两路不会重复移动窗口。
++                CompositionTarget.Rendering += followFrame;
+                 follow.Start();
+             };
+             follow.Tick += delegate { Follow(); };
+-            Closed += delegate { follow.Stop(); };
++            Closed += delegate { CompositionTarget.Rendering -= followFrame; follow.Stop(); };
+         }
+ 
+         void Follow()
+         {
++            if (handle == IntPtr.Zero) return;
+             var cursor = WindowsNative.Cursor();
+-            double scale = WindowsNative.MonitorScale(WindowsNative.ScreenAtPointer());
+-            WindowsNative.SetWindowPos(handle, new IntPtr(-1), cursor.X + 18, cursor.Y + 20, (int)(Width * scale), (int)(Height * scale), 0x10);
++            if (lastScreen == null || cursor.X < lastScreen.Bounds.Left || cursor.X >= lastScreen.Bounds.Right
++                || cursor.Y < lastScreen.Bounds.Top || cursor.Y >= lastScreen.Bounds.Bottom)
++            {
++                lastScreen = WindowsNative.ScreenAtPointer();
++                lastScale = WindowsNative.MonitorScale(lastScreen);
++                shownWidth = shownHeight = 0;
++            }
++            int x = cursor.X + 18, y = cursor.Y + 20;
++            int width = (int)(Width * lastScale), height = (int)(Height * lastScale);
++            bool resized = width != shownWidth || height != shownHeight;
++            if (!resized && x == lastX && y == lastY) return;
++            lastX = x; lastY = y; shownWidth = width; shownHeight = height;
++            // 尺寸不变时带上 NOSIZE（0x1），避免每次移动都走一遍窗口缩放。
++            WindowsNative.SetWindowPos(handle, new IntPtr(-1), x, y, width, height, resized ? 0x10u : 0x11u);
+         }
+     }
+ }
+diff --git a/src/ShotFlight.cs b/src/ShotFlight.cs
+index 5011017..0c09f0a 100644
+--- a/src/ShotFlight.cs
++++ b/src/ShotFlight.cs
+@@ -22,6 +22,11 @@ namespace ScreenLine
+         readonly ScaleTransform resize = new ScaleTransform(), clipScale = new ScaleTransform();
+         readonly TranslateTransform travel = new TranslateTransform();
+         readonly DropShadowEffect shadow = new DropShadowEffect { BlurRadius = 14, ShadowDepth = 4 };
++        // 复用画刷与裁剪几何，避免飞行途中每帧新建对象、触发额外的布局与回收。
++        readonly SolidColorBrush paperBrush = new SolidColorBrush(Color.FromArgb(0, 255, 255, 255));
++        readonly RectangleGeometry photoClip = new RectangleGeometry();
++        readonly RectangleGeometry frameClip = new RectangleGeometry();
++        double styledRounding = -1;
+         readonly Stopwatch clock = new Stopwatch();
+         readonly Action landed;
+         readonly Func<Rect> basketTarget;
+@@ -64,6 +69,8 @@ namespace ScreenLine
+             else frame.RenderTransform = turn;
+             photo.Source = image ?? card.Item.Image.Thumbnail;
+             photo.Stretch = Stretch.Fill;
++            if (!Collecting) photo.Clip = photoClip;
++            border.Background = paperBrush;
+             border.Child = photo;
+             border.BorderBrush = new SolidColorBrush(Color.FromRgb(220, 225, 233));
+             border.Effect = shadow;
+@@ -188,13 +195,22 @@ namespace ScreenLine
+             }
+             turn.CenterX = width / 2;
+             turn.CenterY = -12;
+-            border.Background = new SolidColorBrush(Color.FromArgb((byte)(245 * chrome), 255, 255, 255));
+-            border.BorderThickness = new Thickness(chrome / scaleX, chrome / scaleY, chrome / scaleX, chrome / scaleY);
++            paperBrush.Color = Color.FromArgb((byte)(245 * chrome), 255, 255, 255);
+             double rounding = Falling ? 1 : ease;
+-            border.CornerRadius = new CornerRadius(12 * rounding / Math.Max(scaleX, scaleY));
+-            photo.Margin = new Thickness(6 * rounding / scaleX, 6 * rounding / scaleY, 6 * rounding / scaleX, 6 * rounding / scaleY);
+-            photo.Clip = new RectangleGeometry(new Rect(0, 0, Math.Max(1, frame.Width - photo.Margin.Left * 2 - border.BorderThickness.Left * 2), Math.Max(1, frame.Height - photo.Margin.Top * 2 - border.BorderThickness.Top * 2)), 7 * rounding / scaleX, 7 * rounding / scaleY);
+-            shadow.BlurRadius = 14 / Math.Max(scaleX, scaleY); shadow.ShadowDepth = 4 / scaleY;
++            // 边距、边框、圆角和裁剪会触发布局，按 1/20 步进更新即可保持观感，
++            // 其余帧只更新变换与透明度，避免飞行途中每帧都走一遍布局。
++            double roundingStep = Math.Round(rounding * 20) / 20;
++            if (roundingStep != styledRounding)
++            {
++                styledRounding = roundingStep;
++                border.BorderThickness = new Thickness(chrome / scaleX, chrome / scaleY, chrome / scaleX, chrome / scaleY);
++                border.CornerRadius = new CornerRadius(12 * roundingStep / Math.Max(scaleX, scaleY));
++                photo.Margin = new Thickness(6 * roundingStep / scaleX, 6 * roundingStep / scaleY, 6 * roundingStep / scaleX, 6 * roundingStep / scaleY);
++                photoClip.Rect = new Rect(0, 0, Math.Max(1, frame.Width - photo.Margin.Left * 2 - border.BorderThickness.Left * 2), Math.Max(1, frame.Height - photo.Margin.Top * 2 - border.BorderThickness.Top * 2));
++                photoClip.RadiusX = 7 * roundingStep / scaleX; photoClip.RadiusY = 7 * roundingStep / scaleY;
++            }
++            // 阴影参数量化到 0.5，减少效果层的重复渲染次数。
++            shadow.BlurRadius = Math.Round(28 / Math.Max(scaleX, scaleY)) / 2; shadow.ShadowDepth = Math.Round(8 / scaleY) / 2;
+             shadow.Opacity = 0.2 * chrome;
+             clip.Opacity = chrome;
+             clipScale.ScaleX = 1 / scaleX; clipScale.ScaleY = 1 / scaleY;
+@@ -225,7 +241,7 @@ namespace ScreenLine
+             Canvas.SetLeft(frame, x - width / 2); Canvas.SetTop(frame, top);
+             turn.CenterX = width / 2; turn.CenterY = height / 2;
+             turn.Angle = card.Tilt * (1 - ease) + Math.Sign(endX - startX) * 10 * Math.Sin(Math.PI * ease);
+-            border.Background = Brushes.White; border.BorderThickness = new Thickness(1);
++            paperBrush.Color = Colors.White; border.BorderThickness = new Thickness(1);
+             border.CornerRadius = new CornerRadius(Math.Min(9, width * 0.09));
+             photo.Margin = new Thickness(Math.Min(6, width * 0.04));
+             shadow.Opacity = 0.16 * (1 - ease); clip.Opacity = 0;
+@@ -233,7 +249,10 @@ namespace ScreenLine
+             frame.Clip = null;
+             // 图片跨过篮口后逐渐被篮身遮住，而不是在篮子前方淡出。
+             if (progress > 0.68 && Math.Abs(x - endX) < mouth.Width * 0.6)
+-                frame.Clip = new RectangleGeometry(new Rect(0, 0, width, Math.Max(0, Math.Min(height, mouth.Y - top))));
++            {
++                frameClip.Rect = new Rect(0, 0, width, Math.Max(0, Math.Min(height, mouth.Y - top)));
++                frame.Clip = frameClip;
++            }
+             if (progress < 1) return;
+             arrived = true; Complete(); Close();
+         }

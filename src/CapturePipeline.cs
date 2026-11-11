@@ -223,11 +223,20 @@ namespace ScreenLine
             await Task.Run(() => File.WriteAllBytes(path, png));
             if (disposed) return path;
             receipts.Accept(image.Fingerprint, CaptureSource.Clipboard, DateTime.UtcNow);
-            if (AutoHang) { gallery.Add(path, image); if (Arrived != null) Arrived(gallery.Items.Last(), origin); }
-            else gallery.Collect(path, image);
-            var data = new DataObject(); data.SetImage(picture); data.SetData("PNG", new MemoryStream(png)); data.SetData(ClipboardRules.OwnFormat, "1");
+            // 只登记位图一种格式（SetImage 附带的另外两种仅 .NET 程序识别，却各自要整图转换一遍），
+            // 并在挂图之前写入：写剪贴板会占用界面线程，放在起飞之后会让上绳动画的开头卡住。
+            var data = new DataObject(); data.SetData(DataFormats.Bitmap, picture, false); data.SetData("PNG", new MemoryStream(png)); data.SetData(ClipboardRules.OwnFormat, "1");
             data.SetFileDropList(new System.Collections.Specialized.StringCollection { path });
-            await WindowsClipboard.Write(data); IgnoreCurrentClipboard();
+            try { await WindowsClipboard.Write(data); IgnoreCurrentClipboard(); }
+            finally
+            {
+                // 剪贴板写入失败时截图仍照常挂上。
+                if (!disposed)
+                {
+                    if (AutoHang) { gallery.Add(path, image); if (Arrived != null) Arrived(gallery.Items.Last(), origin); }
+                    else gallery.Collect(path, image);
+                }
+            }
             return path;
         }
 
