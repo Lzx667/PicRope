@@ -112,6 +112,24 @@ namespace ScreenLine.Tests
             Check(topHover.IsChecked && store.State.RevealOnTopHover && new StateStore(store.Root).State.RevealOnTopHover, "保存失败恢复菜单勾选与内存、磁盘配置");
             Check(Application.Current.Windows.OfType<LightNotice>().Any(), "保存失败显示提示");
             foreach (var notice in Application.Current.Windows.OfType<LightNotice>().ToArray()) notice.Close();
+            var shortcutSwitch = more.Items.OfType<MenuItem>().Single(item => item.Header as string == "Ctrl+Alt+T 显示/收起");
+            Check(shortcutSwitch.IsCheckable && shortcutSwitch.IsChecked && store.State.ToggleShortcut, "显隐快捷键开关默认开启");
+            shortcutSwitch.IsChecked = false; shortcutSwitch.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+            Check(!store.State.ToggleShortcut && !new StateStore(store.Root).State.ToggleShortcut && controller.TrayMenu.Shortcut.Text == "",
+                "菜单关闭显隐快捷键并保存，托盘不再显示组合键");
+            topHover.IsChecked = false; topHover.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+            Check(topHover.IsChecked && store.State.RevealOnTopHover && new StateStore(store.Root).State.RevealOnTopHover
+                && Application.Current.Windows.OfType<LightNotice>().Any(), "两种展开方式不能同时关闭");
+            foreach (var notice in Application.Current.Windows.OfType<LightNotice>().ToArray()) notice.Close();
+            controller.Dispose();
+            store = new StateStore(store.Root); controller = new DesktopController(store, watched, false);
+            more = controller.TrayMenu.MoreMenu;
+            topHover = more.Items.OfType<MenuItem>().Single(item => item.Header as string == "鼠标移至顶部时展开");
+            shortcutSwitch = more.Items.OfType<MenuItem>().Single(item => item.Header as string == "Ctrl+Alt+T 显示/收起");
+            Check(topHover.IsChecked && !shortcutSwitch.IsChecked && controller.TrayMenu.Shortcut.Text == "", "重启后保留仅顶部悬停模式");
+            shortcutSwitch.IsChecked = true; shortcutSwitch.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+            Check(shortcutSwitch.IsChecked && store.State.ToggleShortcut && new StateStore(store.Root).State.ToggleShortcut, "重新开启显隐快捷键并保存");
+            foreach (var notice in Application.Current.Windows.OfType<LightNotice>().ToArray()) notice.Close();
             more.ApplyTemplate(); more.Measure(new Size(1000, 1000)); more.Arrange(new Rect(more.DesiredSize)); more.UpdateLayout();
             Check(more.ActualWidth > 0 && more.ActualHeight > 0 && topHover.ActualWidth > 0, "包含新开关的更多操作菜单可完成布局");
             var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(RenderMenu(more)));
@@ -122,10 +140,14 @@ namespace ScreenLine.Tests
             controller.Gallery.Add(path, ImageContent.Decode(content));
             var card = controller.Shelf.CardFor(path);
             Check(card.ActionMenu.Actions.Count == 6, "关闭和重新开启悬停后仍可创建图片右键菜单");
-            more.Items.OfType<MenuItem>().Single(item => item.Header as string == "全部取下（保留文件）")
-                .RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+            var clearAll = more.Items.OfType<MenuItem>().Single(item => item.Header as string == "全部取下（保留文件）");
+            Check(clearAll.InputGestureText == "Ctrl+Alt+D" || clearAll.InputGestureText == "快捷键被占用", "全部取下显示快捷键状态");
+            clearAll.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
             Check(controller.Gallery.Items.Count == 0 && new StateStore(store.Root).State.Images.Count == 0 && File.Exists(path),
                 "保存失败回滚后全部取下仍能执行、保存并保留原文件");
+            Check(controller.Gallery.Collected.Any(item => item.Path == path) && Application.Current.Windows.OfType<LightNotice>().Any(),
+                "全部取下后图片仍在篮子，并显示提示");
+            foreach (var notice in Application.Current.Windows.OfType<LightNotice>().ToArray()) notice.Close();
         }
 
         static async Task CheckMenuInputProbe()

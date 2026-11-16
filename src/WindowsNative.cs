@@ -195,13 +195,31 @@ namespace ScreenLine
         readonly HwndSource source;
         public bool ShortcutAvailable { get; private set; }
         public bool CaptureShortcutAvailable { get; private set; }
-        uint toggleModifiers, toggleKey, captureModifiers, captureKey;
+        public bool ClearShortcutAvailable { get; private set; }
+        uint toggleModifiers, toggleKey, captureModifiers, captureKey, clearModifiers, clearKey;
         int toggleId = 1, captureId = 3;
+        const int ClearId = 5;
         bool disposed;
         public event Action ClipboardChanged;
         public event Action ToggleRequested;
         public event Action ExitRequested;
         public event Action CaptureRequested;
+        public event Action ClearRequested;
+
+        public void UnregisterToggle()
+        {
+            if (!ShortcutAvailable) return;
+            WindowsNative.UnregisterHotKey(source.Handle, toggleId);
+            ShortcutAvailable = false;
+        }
+
+        public bool RegisterClear(uint modifiers, uint key)
+        {
+            if (disposed || ClearShortcutAvailable || !ShortcutRules.IsValid(modifiers, key)) return false;
+            if (!WindowsNative.RegisterHotKey(source.Handle, ClearId, modifiers | 0x4000, key)) return false;
+            clearModifiers = modifiers; clearKey = key; ClearShortcutAvailable = true;
+            return true;
+        }
 
         public bool RegisterCapture(uint modifiers, uint key)
         {
@@ -247,6 +265,7 @@ namespace ScreenLine
             if (message == 0x031D && ClipboardChanged != null) ClipboardChanged();
             if ((message == WindowsNative.ShowMessage || message == 0x0312 && ShortcutAvailable && w.ToInt32() == toggleId && Matches(l, toggleModifiers, toggleKey)) && ToggleRequested != null) ToggleRequested();
             if (message == 0x0312 && CaptureShortcutAvailable && w.ToInt32() == captureId && Matches(l, captureModifiers, captureKey) && CaptureRequested != null) CaptureRequested();
+            if (message == 0x0312 && ClearShortcutAvailable && w.ToInt32() == ClearId && Matches(l, clearModifiers, clearKey) && ClearRequested != null) ClearRequested();
             if (message == WindowsNative.ExitMessage && ExitRequested != null) ExitRequested();
             return IntPtr.Zero;
         }
@@ -264,7 +283,8 @@ namespace ScreenLine
             WindowsNative.RemoveClipboardFormatListener(source.Handle);
             if (ShortcutAvailable) WindowsNative.UnregisterHotKey(source.Handle, toggleId);
             if (CaptureShortcutAvailable) WindowsNative.UnregisterHotKey(source.Handle, captureId);
-            ShortcutAvailable = CaptureShortcutAvailable = false;
+            if (ClearShortcutAvailable) WindowsNative.UnregisterHotKey(source.Handle, ClearId);
+            ShortcutAvailable = CaptureShortcutAvailable = ClearShortcutAvailable = false;
             source.Dispose();
         }
     }

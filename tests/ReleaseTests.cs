@@ -235,7 +235,15 @@ namespace ScreenLine.Tests
                 Check(conflict.RegisterCapture(6, 0x79), "保存失败后释放新组合键");
                 saved = false;
                 Check(owner.RegisterToggle(6, 0x77, delegate { saved = true; }) && saved, "显隐快捷键可在保存成功后切换绑定");
+                owner.UnregisterToggle(); owner.UnregisterToggle();
+                Check(!owner.ShortcutAvailable && conflict.RegisterToggle(6, 0x77), "注销显隐快捷键后释放给其他程序");
+                Check(!owner.RegisterToggle(6, 0x77) && !owner.ShortcutAvailable, "重新开启时组合键被占用则失败");
+                conflict.UnregisterToggle();
+                Check(owner.RegisterToggle(6, 0x77) && owner.ShortcutAvailable, "释放后可重新开启显隐快捷键");
+                Check(owner.RegisterClear(6, 0x76) && owner.ClearShortcutAvailable, "可注册全部下绳快捷键");
+                Check(!conflict.RegisterClear(6, 0x76) && !conflict.ClearShortcutAvailable, "全部下绳快捷键冲突时被拒绝");
                 owner.Dispose(); owner.Dispose();
+                Check(!owner.ClearShortcutAvailable && conflict.RegisterClear(6, 0x76), "释放后全部下绳快捷键可被重新注册");
                 Check(!owner.ShortcutAvailable && !owner.CaptureShortcutAvailable
                     && !owner.RegisterToggle(6, 0x78) && !owner.RegisterCapture(6, 0x7B), "重复释放安全，释放后不能重新注册");
                 Check(conflict.RegisterCapture(6, 0x7B) && conflict.RegisterToggle(6, 0x77), "释放后两种组合键均可被重新注册");

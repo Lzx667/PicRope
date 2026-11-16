@@ -199,6 +199,23 @@ namespace ScreenLine.Tests
                 gallery.Clear();
                 Check(gallery.Items.Count == 0 && gallery.Collected.Count == 52);
             });
+            Run("全部取下保存失败时恢复绳上图片，不通知界面", delegate
+            {
+                var store = new StateStore(Path.Combine(root, "clear-failure-profile"));
+                var gallery = new Gallery(store);
+                string first = WritePicture("取下失败_1.png", 61), second = WritePicture("取下失败_2.png", 62);
+                gallery.Add(first, ImageContent.Read(first)); gallery.Add(second, ImageContent.Read(second));
+                int changes = 0; gallery.Changed += delegate { changes++; };
+                string blocker = Path.Combine(store.Root, "state.json.tmp");
+                Directory.CreateDirectory(blocker);
+                bool saveFailed = false;
+                try { gallery.Clear(); } catch (IOException) { saveFailed = true; } catch (UnauthorizedAccessException) { saveFailed = true; }
+                Directory.Delete(blocker);
+                Check(saveFailed && changes == 0 && gallery.Items.Select(i => i.Path).SequenceEqual(new[] { first, second })
+                    && store.State.Images.SequenceEqual(new[] { first, second }) && new StateStore(store.Root).State.Images.Count == 2);
+                gallery.Clear();
+                Check(changes == 1 && gallery.Items.Count == 0 && new StateStore(store.Root).State.Images.Count == 0);
+            });
             Run("重新挂上已编辑的图片时使用最新内容", delegate
             {
                 var gallery = new Gallery(new StateStore(Path.Combine(root, "basket-edited-profile")));
@@ -239,6 +256,16 @@ namespace ScreenLine.Tests
                 File.WriteAllText(Path.Combine(store.Root, "state.json"), "{\"Images\":[\"旧截图.png\"],\"HoverPreview\":false}");
                 var legacy = new StateStore(store.Root);
                 Check(legacy.State.RevealOnTopHover && !legacy.State.HoverPreview && legacy.State.Images.Single() == "旧截图.png");
+            });
+            Run("显隐快捷键开关默认开启，旧配置兼容，可保存恢复", delegate
+            {
+                var store = new StateStore(Path.Combine(root, "toggle-switch-profile"));
+                Check(store.State.ToggleShortcut);
+                store.State.ToggleShortcut = false; store.Save();
+                Check(!new StateStore(store.Root).State.ToggleShortcut);
+                File.WriteAllText(Path.Combine(store.Root, "state.json"), "{\"RevealOnTopHover\":false}");
+                var legacy = new StateStore(store.Root);
+                Check(legacy.State.ToggleShortcut && !legacy.State.RevealOnTopHover);
             });
             Run("显隐快捷键兼容旧配置，自定义组合键可保存恢复", delegate
             {

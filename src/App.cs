@@ -44,6 +44,7 @@ namespace ScreenLine
         internal CaptureWindow Capture { get; private set; }
         internal ShortcutWindow ShortcutSettings { get; private set; }
         readonly MenuItem captureMenu;
+        readonly MenuItem topHoverToggle, shortcutToggle;
         internal readonly List<ImageEditorWindow> Editors = new List<ImageEditorWindow>();
         readonly AppUpdates updates = new AppUpdates();
         readonly CancellationTokenSource updateLifetime = new CancellationTokenSource();
@@ -68,8 +69,11 @@ namespace ScreenLine
             Shelf.TextRequested += ShowTexts;
             Texts.Changed += Shelf.UpdateTexts;
             events = new WindowsEvents();
+            if (!store.State.ToggleShortcut) events.UnregisterToggle();
             events.RegisterCapture(store.State.CaptureModifiers, store.State.CaptureKey);
+            events.RegisterClear(3, (uint)'D');
             events.CaptureRequested += ShowCapture;
+            events.ClearRequested += ClearRope;
             events.ToggleRequested += Shelf.Toggle;
             events.ExitRequested += Exit;
             events.ClipboardChanged += Captures.ClipboardChanged;
@@ -85,8 +89,7 @@ namespace ScreenLine
             TrayMenu.Opened += delegate { SyncScreens(); };
             TrayMenu.ScreenMenu.Opened += delegate { SyncScreens(); };
             TrayMenu.OnAction(TrayMenu.VisibilityButton, delegate { Shelf.Toggle(); });
-            if (events.ShortcutAvailable) TrayMenu.Shortcut.Text = "Ctrl+Alt+T";
-            else Notice("Ctrl+Alt+T 已被占用，可点击托盘图标打开。");
+            if (store.State.ToggleShortcut && !events.ShortcutAvailable) Notice("Ctrl+Alt+T 已被占用，可点击托盘图标打开。");
             TrayMenu.OnAction(TrayMenu.BasketButton, ShowBasket);
             TrayMenu.OnAction(TrayMenu.TextButton, ShowTexts);
             autoHang = TrayMenu.AutoHang;
@@ -103,14 +106,11 @@ namespace ScreenLine
             });
             TrayMenu.OnAction(TrayMenu.AppearanceButton, ShowAppearance);
             var more = TrayMenu.MoreMenu;
-            MenuItem topHoverToggle = null;
-            topHoverToggle = more.AddAction("鼠标移至顶部时展开", "show", delegate
-            {
-                try { Shelf.SetRevealOnTopHover(topHoverToggle.IsChecked); }
-                catch (Exception error) { topHoverToggle.IsChecked = store.State.RevealOnTopHover; store.Log(error); Notice("顶部展开设置保存失败"); }
-            });
+            topHoverToggle = more.AddAction("鼠标移至顶部时展开", "show", delegate { SetRevealMode(topHoverToggle.IsChecked, store.State.ToggleShortcut); });
             topHoverToggle.IsCheckable = true;
-            topHoverToggle.IsChecked = store.State.RevealOnTopHover;
+            shortcutToggle = more.AddAction("Ctrl+Alt+T 显示/收起", "shortcut", delegate { SetRevealMode(store.State.RevealOnTopHover, shortcutToggle.IsChecked); });
+            shortcutToggle.IsCheckable = true;
+            SyncRevealMenu();
             MenuItem previewToggle = null;
             previewToggle = more.AddAction("悬停预览", "picture", delegate
             {
@@ -142,7 +142,7 @@ namespace ScreenLine
                 try { WindowsShell.OpenInbox(store); }
                 catch (Exception error) { store.Log(error); Notice("无法打开收集文件夹：" + error.Message); }
             });
-            more.AddAction("全部取下（保留文件）", "clear", delegate { Gallery.Clear(); });
+            more.AddAction("全部取下（保留文件）", "clear", ClearRope).InputGestureText = events.ClearShortcutAvailable ? "Ctrl+Alt+D" : "快捷键被占用";
             more.Separator();
             MenuItem startup = null;
             startup = more.AddAction("开机启动", "startup", delegate
@@ -182,6 +182,45 @@ namespace ScreenLine
         void UpdateCaptureLabel()
         {
             captureMenu.InputGestureText = events.CaptureShortcutAvailable ? ShortcutWindow.Label(Gallery.Store.State.CaptureModifiers, Gallery.Store.State.CaptureKey) : "快捷键被占用";
+        }
+
+        void SetRevealMode(bool hover, bool shortcut)
+        {
+            var state = Gallery.Store.State;
+            if (!hover && !shortcut) { SyncRevealMenu(); Notice("至少保留一种展开方式"); return; }
+            if (shortcut && !events.ShortcutAvailable && !events.RegisterToggle(3, (uint)'T'))
+            {
+                Notice("Ctrl+Alt+T 已被占用，可点击托盘图标打开。");
+                // 只剩托盘入口时不切换，避免用户找不到展开方式。
+                if (!hover) { SyncRevealMenu(); return; }
+            }
+            bool previous = state.ToggleShortcut;
+            state.ToggleShortcut = shortcut;
+            try { Shelf.SetRevealOnTopHover(hover); }
+            catch (Exception error)
+            {
+                state.ToggleShortcut = previous;
+                if (!previous) events.UnregisterToggle();
+                Gallery.Store.Log(error); SyncRevealMenu(); Notice("展开方式保存失败"); return;
+            }
+            if (!shortcut) events.UnregisterToggle();
+            SyncRevealMenu();
+        }
+
+        void SyncRevealMenu()
+        {
+            topHoverToggle.IsChecked = Gallery.Store.State.RevealOnTopHover;
+            shortcutToggle.IsChecked = Gallery.Store.State.ToggleShortcut;
+            TrayMenu.Shortcut.Text = events.ShortcutAvailable ? "Ctrl+Alt+T" : "";
+        }
+
+        void ClearRope()
+        {
+            int count = Gallery.Items.Count;
+            if (count == 0) { Notice("绳上暂无图片"); return; }
+            try { Gallery.Clear(); }
+            catch (Exception error) { Gallery.Store.Log(error); Notice("全部取下失败，请重试。"); return; }
+            Notice("已取下 " + count + " 张，可在图片篮子找回");
         }
 
         internal bool SetCaptureShortcut(uint modifiers, uint key)
