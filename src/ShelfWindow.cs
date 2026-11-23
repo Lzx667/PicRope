@@ -311,12 +311,15 @@ namespace ScreenLine
             Reveal(true, true, 0);
         }
 
-        internal void SetRevealOnTopHover(bool enabled)
+        internal void SetRevealOnTopHover(bool enabled) { SetRevealOnTopHover(enabled, gallery.Store.State.HoverWholeEdge); }
+
+        internal void SetRevealOnTopHover(bool enabled, bool wholeEdge)
         {
-            bool previous = gallery.Store.State.RevealOnTopHover;
-            gallery.Store.State.RevealOnTopHover = enabled;
+            var state = gallery.Store.State;
+            bool previous = state.RevealOnTopHover, previousEdge = state.HoverWholeEdge;
+            state.RevealOnTopHover = enabled; state.HoverWholeEdge = wholeEdge;
             try { gallery.Store.Save(); }
-            catch { gallery.Store.State.RevealOnTopHover = previous; throw; }
+            catch { state.RevealOnTopHover = previous; state.HoverWholeEdge = previousEdge; throw; }
             edgeSince = DateTime.MaxValue;
             // 跨屏收起也是顶部悬停发起的，关闭时取消尚未完成的自动展开。
             if (!enabled) CancelDisplaySwitch();
@@ -749,22 +752,38 @@ namespace ScreenLine
             return false;
         }
 
+        // 左上角触发区的宽度按逻辑像素计，随显示器缩放换算。
+        const double CornerWidth = 16;
+        internal static int CornerReach(Forms.Screen screen) { return Math.Max(3, (int)Math.Round(CornerWidth * WindowsNative.MonitorScale(screen))); }
+
+        // 悬停展开的触发区：整条顶边，或只认左上角一小段。任务栏占用的顶边、左侧同样算作屏幕边缘。
+        internal static bool InHoverZone(Forms.Screen screen, WindowsNative.Point cursor, bool wholeEdge)
+        {
+            var bounds = screen.Bounds;
+            var work = screen.WorkingArea;
+            if (cursor.X < bounds.Left || cursor.X >= bounds.Right
+                || cursor.Y < bounds.Top || cursor.Y > Math.Max(bounds.Top + 2, work.Top - 1)) return false;
+            return wholeEdge || cursor.X <= Math.Max(bounds.Left + CornerReach(screen) - 1, work.Left - 1);
+        }
+
         void Tick(object sender, EventArgs args)
         {
             if (Capturing) { CancelDisplaySwitch(); edgeSince = DateTime.MaxValue; return; }
             var cursor = WindowsNative.Cursor();
             var screen = SelectedDisplay();
             bool down = (WindowsNative.GetAsyncKeyState(1) & 0x8000) != 0;
-            bool nearTop = cursor.X >= screen.Bounds.Left && cursor.X < screen.Bounds.Right
-                && cursor.Y >= screen.Bounds.Top && cursor.Y <= Math.Max(screen.Bounds.Top + 2, screen.WorkingArea.Top - 1);
-            var interval = TimeSpan.FromMilliseconds(Revealed || nearTop ? 30 : 100);
+            bool atTop = InHoverZone(screen, cursor, true);
+            bool inZone = atTop && (gallery.Store.State.HoverWholeEdge || InHoverZone(screen, cursor, false));
+            var interval = TimeSpan.FromMilliseconds(Revealed || atTop ? 30 : 100);
             if (pointer.Interval != interval) pointer.Interval = interval;
             bool over = Revealed && OverControl(cursor);
             var now = DateTime.UtcNow;
             bool viewing = ViewingImage(now);
             bool busy = VisibleCards().Any(c => c.Busy);
-            if (!nearTop) suppressEdge = false;
-            if (nearTop && down && !previousDown && !over && !viewing)
+            if (!inZone) suppressEdge = false;
+            // 在触发区外按下、拖进触发区后松开（拖窗口到角落、选文字到顶边）不算悬停，指针离开触发区前不展开。
+            if (inZone && !down && previousDown) suppressEdge = true;
+            if (inZone && down && !previousDown && !over && !viewing)
             {
                 suppressEdge = true;
                 edgeSince = DateTime.MaxValue;
@@ -799,7 +818,7 @@ namespace ScreenLine
                 }
                 return;
             }
-            if ((Revealed || nearTop || avoidingCaption) && !busy && !viewing && !ChoosingAppearance && !ChoosingBasket && !ChoosingTexts
+            if ((Revealed || atTop || avoidingCaption) && !busy && !viewing && !ChoosingAppearance && !ChoosingBasket && !ChoosingTexts
                 && !flights.Any(flight => !flight.Falling && !flight.Collecting)
                 && WindowsNative.OverCaptionButtons(screen, cursor, Handle))
             {
@@ -814,7 +833,7 @@ namespace ScreenLine
                     && cursor.Y >= Display.WorkingArea.Top && cursor.Y < Display.WorkingArea.Top + 220 * WindowsNative.MonitorScale(Display))
                     Reveal(true, false, 0);
             }
-            if (gallery.Store.State.RevealOnTopHover && nearTop && !down && !suppressEdge && !WindowsNative.FullScreen(screen, Handle))
+            if (gallery.Store.State.RevealOnTopHover && inZone && !down && !suppressEdge && !WindowsNative.FullScreen(screen, Handle))
             {
                 if (edgeSince == DateTime.MaxValue) edgeSince = now;
                 if (now - edgeSince >= TimeSpan.FromMilliseconds(320) && (!Revealed || screen.DeviceName != Display.DeviceName))

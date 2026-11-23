@@ -102,6 +102,34 @@ namespace ScreenLine.Tests
             return screen;
         }
 
+        // 左上角触发区内的指针：横向贴屏幕最左端，纵向沿用顶边判定（顶部任务栏时落在任务栏内）。
+        static WindowsNative.Point Corner(Forms.Screen screen, bool topTaskbar)
+        {
+            return new WindowsNative.Point { X = screen.Bounds.Left + 2, Y = topTaskbar ? screen.WorkingArea.Top - 1 : screen.Bounds.Top + 1 };
+        }
+
+        static void CheckHoverZone(Forms.Screen screen, double scale, string label)
+        {
+            var bounds = screen.Bounds;
+            int reach = (int)Math.Round(16 * scale);
+            int bottom = Math.Max(bounds.Top + 2, screen.WorkingArea.Top - 1);
+            Func<int, int, bool, bool> zone = delegate(int x, int y, bool wholeEdge)
+            {
+                return ShelfWindow.InHoverZone(screen, new WindowsNative.Point { X = x, Y = y }, wholeEdge);
+            };
+            int middle = bounds.Left + bounds.Width / 2;
+            Check(ShelfWindow.CornerReach(screen) == reach && zone(bounds.Left, bounds.Top, false) && zone(bounds.Left + reach - 1, bottom, false)
+                && !zone(bounds.Left + reach, bounds.Top, false) && !zone(middle, bounds.Top, false) && !zone(bounds.Left, bottom + 1, false),
+                label + "左上角模式只认左上角一小段，宽度随缩放换算");
+            Check(zone(middle, bounds.Top, true) && !zone(middle, bottom + 1, true) && !zone(bounds.Left - 1, bounds.Top, true) && !zone(bounds.Right, bounds.Top, true),
+                label + "整条顶边模式认整条顶边，顶边以下和屏幕外不算");
+            var leftBar = Screen("SIM-LEFTBAR", bounds, new System.Drawing.Rectangle(bounds.Left + 48, bounds.Top, bounds.Width - 48, bounds.Height - 40), false);
+            Scales[leftBar.DeviceName] = scale;
+            Check(ShelfWindow.InHoverZone(leftBar, new WindowsNative.Point { X = bounds.Left + 47, Y = bounds.Top }, false)
+                && !ShelfWindow.InHoverZone(leftBar, new WindowsNative.Point { X = bounds.Left + 48, Y = bounds.Top }, false),
+                label + "左侧任务栏与顶部任务栏同样算作屏幕边缘");
+        }
+
         static Gallery Open()
         {
             var root = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "test-data", Guid.NewGuid().ToString("N"));
@@ -157,6 +185,7 @@ namespace ScreenLine.Tests
             shelf.SetRevealOnTopHover(false);
             string label = name + " " + scale * 100 + "%：";
             Check(shelf.Display == main, label + "从主屏启动");
+            CheckHoverZone(secondary, scale, label);
             Pointer = new WindowsNative.Point { X = bounds.Left + bounds.Width / 2, Y = bounds.Top + 200 };
             shelf.Height = 110;
             shelf.Toggle();
@@ -189,14 +218,14 @@ namespace ScreenLine.Tests
             shelf.Toggle();
             Check(!shelf.Revealed, label + "再次调用快捷键入口收起");
             await Task.Delay(70);
-            Pointer.Y = topTaskbar ? work.Top - 1 : bounds.Top + 1;
+            Pointer = Corner(secondary, topTaskbar);
             await Task.Delay(430);
-            Check(!shelf.Revealed && shelf.Display == secondary, label + "关闭悬停展开后，跟随鼠标模式顶部停留不唤出");
+            Check(!shelf.Revealed && shelf.Display == secondary, label + "关闭悬停展开后，跟随鼠标模式左上角停留不唤出");
             shelf.SetRevealOnTopHover(true);
             await Task.Delay(100);
-            Check(!shelf.Revealed, label + "顶部短暂停留不会立即展开");
-            Check(await Until(() => shelf.Revealed && shelf.Display == secondary), label + "实际定时器在顶部停留后展开到副屏");
-            Pointer = new WindowsNative.Point { X = 700, Y = 1 };
+            Check(!shelf.Revealed, label + "左上角短暂停留不会立即展开");
+            Check(await Until(() => shelf.Revealed && shelf.Display == secondary), label + "实际定时器在左上角停留后展开到副屏");
+            Pointer = Corner(main, false);
             Check(await Until(() => !shelf.Revealed || shelf.Display == main), label + "跨屏切换启动");
             Check(!shelf.Revealed && shelf.Display == secondary, label + "跨屏时先在原屏收起，再调整目标屏幕尺寸");
             if (scenarios == 1)
@@ -209,7 +238,7 @@ namespace ScreenLine.Tests
             Check(slideAtMove <= -299.9, label + "调整目标屏幕窗口尺寸时图绳已完全收起");
             if (scenarios == 1)
             {
-                Pointer = new WindowsNative.Point { X = bounds.Left + bounds.Width / 2, Y = bounds.Top + 1 };
+                Pointer = Corner(secondary, topTaskbar);
                 Check(await Until(() => !shelf.Revealed && shelf.Display == main), label + "再次切屏时先收起");
                 Pointer = new WindowsNative.Point { X = 700, Y = 400 };
                 Check(await Until(() => shelf.Revealed && shelf.Display == main), label + "收起期间鼠标返回原屏时保持跟随当前屏幕");
@@ -244,15 +273,15 @@ namespace ScreenLine.Tests
             shelf.Toggle();
             Check(shelf.Revealed && shelf.Display == secondary, label + "鼠标在主屏时快捷键仍在固定副屏展开");
             shelf.Reveal(false, false, 0);
-            Pointer.Y = 1;
+            Pointer = Corner(main, false);
             await Task.Delay(430);
-            Check(!shelf.Revealed && shelf.Display == secondary, label + "固定副屏后，主屏顶部不会呼出或带走图绳");
-            Pointer = new WindowsNative.Point { X = bounds.Left + bounds.Width / 2, Y = bounds.Top + 1 };
+            Check(!shelf.Revealed && shelf.Display == secondary, label + "固定副屏后，主屏左上角不会呼出或带走图绳");
+            Pointer = Corner(secondary, topTaskbar);
             shelf.SetRevealOnTopHover(false);
             await Task.Delay(430);
-            Check(!shelf.Revealed && shelf.Display == secondary, label + "关闭悬停展开后，固定屏幕顶部停留不唤出");
+            Check(!shelf.Revealed && shelf.Display == secondary, label + "关闭悬停展开后，固定屏幕左上角停留不唤出");
             shelf.SetRevealOnTopHover(true);
-            Check(await Until(() => shelf.Revealed && shelf.Display == secondary), label + "固定副屏顶部仍可正常呼出");
+            Check(await Until(() => shelf.Revealed && shelf.Display == secondary), label + "固定副屏左上角仍可正常呼出");
 
             if (scenarios == 1)
             {
@@ -293,12 +322,19 @@ namespace ScreenLine.Tests
             if (scenarios == 1)
             {
                 shelf.Reveal(false, false, 0);
-                Pointer = new WindowsNative.Point { X = bounds.Left + bounds.Width / 2, Y = bounds.Top + 1 }; MouseDown = true;
+                Pointer = Corner(secondary, topTaskbar); MouseDown = true;
                 await Task.Delay(80); MouseDown = false;
                 await Task.Delay(430);
-                Check(!shelf.Revealed, label + "点击顶部后保持收起，避免立即反弹");
+                Check(!shelf.Revealed, label + "点击左上角后保持收起，避免立即反弹");
                 Pointer.Y += 200; await Task.Delay(70); Pointer.Y = bounds.Top + 1;
-                Check(await Until(() => shelf.Revealed), label + "离开后重新进入顶部恢复呼出");
+                Check(await Until(() => shelf.Revealed), label + "离开后重新进入左上角恢复呼出");
+                shelf.Reveal(false, false, 0);
+                Pointer.Y += 200; MouseDown = true; await Task.Delay(150);
+                Pointer.Y = bounds.Top + 1; await Task.Delay(150); MouseDown = false;
+                await Task.Delay(430);
+                Check(!shelf.Revealed, label + "拖到左上角后松开，停留不展开");
+                Pointer.Y += 200; await Task.Delay(70); Pointer.Y = bounds.Top + 1;
+                Check(await Until(() => shelf.Revealed), label + "松开后离开再进入左上角恢复呼出");
                 string path = Path.Combine(projectRoot, "docs", "assets", "rope-preview.png");
                 gallery.Add(path, ImageContent.Read(path));
                 var item = gallery.Items.Single();
@@ -332,7 +368,7 @@ namespace ScreenLine.Tests
             try
             {
                 Screens = new[] { main, secondary };
-                Pointer = new WindowsNative.Point { X = 700, Y = 1 };
+                Pointer = Corner(main, false);
                 shelf.Reveal(false, false, 0);
                 shelf.SetRevealOnTopHover(true);
                 var edge = typeof(ShelfWindow).GetField("edgeSince", instanceFlags);
@@ -344,6 +380,21 @@ namespace ScreenLine.Tests
                 MouseDown = true; Tick(); MouseDown = false; Tick();
                 Check(!shelf.Revealed && (DateTime)edge.GetValue(shelf) == DateTime.MaxValue, "按住鼠标拖过顶部和松手不会触发展开");
                 Pointer.Y = 400; Tick();
+                Pointer = new WindowsNative.Point { X = 700, Y = 1 }; Tick();
+                Check(!shelf.Revealed && (DateTime)edge.GetValue(shelf) == DateTime.MaxValue, "左上角模式下顶部正中间停留不计时也不展开");
+                shelf.SetRevealOnTopHover(true, true); Tick();
+                edge.SetValue(shelf, DateTime.UtcNow.AddSeconds(-1)); Tick();
+                Check(shelf.Revealed, "改选整条顶边后顶部正中间停留可展开");
+                shelf.Reveal(false, false, 0); shelf.SetRevealOnTopHover(true, false);
+                Pointer = Corner(main, false); Tick();
+                Check(!shelf.Revealed && (DateTime)edge.GetValue(shelf) != DateTime.MaxValue, "改回左上角后回到左上角才开始计时");
+                Pointer.Y = 400; MouseDown = true; Tick();
+                Pointer.Y = 1; Tick();
+                MouseDown = false; Tick();
+                var suppress = typeof(ShelfWindow).GetField("suppressEdge", instanceFlags);
+                Check(!shelf.Revealed && (bool)suppress.GetValue(shelf) && (DateTime)edge.GetValue(shelf) == DateTime.MaxValue, "拖到左上角后松开不算悬停，离开前保持抑制");
+                Pointer.Y = 400; Tick();
+                Check(!(bool)suppress.GetValue(shelf), "离开左上角后解除抑制");
                 shelf.SetRevealOnTopHover(false);
                 shelf.Toggle();
                 Check(shelf.Revealed, "关闭悬停展开后手动入口仍可显示");
@@ -368,9 +419,9 @@ namespace ScreenLine.Tests
                 Check(shelf.Revealed, "关闭悬停展开后编辑返回仍主动展示");
                 foreach (var flight in shelf.MotionWindows.ToArray()) flight.Close();
                 shelf.SetRevealOnTopHover(true);
-                Pointer = new WindowsNative.Point { X = secondary.Bounds.Left + 700, Y = secondary.Bounds.Top + 1 };
+                Pointer = Corner(secondary, false);
                 edge.SetValue(shelf, DateTime.UtcNow.AddSeconds(-1)); Tick();
-                Check(!shelf.Revealed, "顶部悬停跨屏切换进入收起阶段");
+                Check(!shelf.Revealed, "左上角悬停跨屏切换进入收起阶段");
                 typeof(ShelfWindow).GetField("hideTime", instanceFlags).SetValue(shelf, 0.3); Tick();
                 shelf.SetRevealOnTopHover(false);
                 await Task.Delay(80);
@@ -385,7 +436,7 @@ namespace ScreenLine.Tests
                 shelf.SetRevealOnTopHover(false);
                 Check(shelf.Revealed, "关闭悬停不收起已由手动入口显示的图绳");
                 shelf.SetRevealOnTopHover(true);
-                Pointer = new WindowsNative.Point { X = secondary.Bounds.Left + 700, Y = secondary.Bounds.Top + 1 };
+                Pointer = Corner(secondary, false);
                 edge.SetValue(shelf, DateTime.UtcNow.AddSeconds(-1)); Tick();
                 typeof(ShelfWindow).GetField("hideTime", instanceFlags).SetValue(shelf, 0.3); Tick();
                 shelf.SetRevealOnTopHover(false); shelf.Toggle();
@@ -413,7 +464,7 @@ namespace ScreenLine.Tests
             MouseDown = false; CaptionButtons = false; FullScreens.Clear(); shelf.Capturing = false;
             Pointer = new WindowsNative.Point { X = 700, Y = 400 };
             shelf.SetRevealOnTopHover(true); shelf.Reveal(false, false, 0); shelf.Toggle();
-            Pointer = new WindowsNative.Point { X = secondary.Bounds.Left + 700, Y = secondary.Bounds.Top + 1 };
+            Pointer = Corner(secondary, false);
             typeof(ShelfWindow).GetField("edgeSince", instanceFlags).SetValue(shelf, DateTime.UtcNow.AddSeconds(-1)); Tick();
             if (queue) { typeof(ShelfWindow).GetField("hideTime", instanceFlags).SetValue(shelf, 0.3); Tick(); }
         }
@@ -424,7 +475,7 @@ namespace ScreenLine.Tests
             MouseDown = true; Tick(); MouseDown = false; Tick();
             typeof(ShelfWindow).GetField("hideTime", instanceFlags).SetValue(shelf, 0.3); Tick(); await Task.Delay(80);
             Check(!shelf.Revealed && (bool)typeof(ShelfWindow).GetField("suppressEdge", instanceFlags).GetValue(shelf),
-                "跨屏收起期间顶部短点击会取消展开，松手后保持抑制");
+                "跨屏收起期间左上角短点击会取消展开，松手后保持抑制");
             Pointer.Y += 200; Tick();
 
             StartDisplaySwitch(main, secondary, true);
@@ -442,7 +493,7 @@ namespace ScreenLine.Tests
 
             StartDisplaySwitch(main, secondary, true);
             shelf.SetRevealOnTopHover(false); shelf.SetRevealOnTopHover(true); shelf.Toggle();
-            Pointer = new WindowsNative.Point { X = 700, Y = 1 };
+            Pointer = Corner(main, false);
             typeof(ShelfWindow).GetField("edgeSince", instanceFlags).SetValue(shelf, DateTime.UtcNow.AddSeconds(-1)); Tick();
             await Task.Delay(80);
             Check(!shelf.Revealed && shelf.Display == secondary,
@@ -455,7 +506,7 @@ namespace ScreenLine.Tests
             Check(!shelf.Revealed, "排队展开执行时仍遵守目标屏幕全屏限制"); FullScreens.Clear();
             Pointer = new WindowsNative.Point { X = 700, Y = 400 };
             shelf.Reveal(false, false, 0); shelf.Toggle(); FullScreens.Add(main.DeviceName);
-            Pointer = new WindowsNative.Point { X = secondary.Bounds.Left + 700, Y = secondary.Bounds.Top + 1 };
+            Pointer = Corner(secondary, false);
             typeof(ShelfWindow).GetField("edgeSince", instanceFlags).SetValue(shelf, DateTime.UtcNow.AddSeconds(-1)); Tick();
             typeof(ShelfWindow).GetField("hideTime", instanceFlags).SetValue(shelf, 0.3); Tick(); await Task.Delay(80);
             Check(shelf.Revealed && shelf.Display == secondary, "原屏幕全屏不阻止非全屏目标屏幕的悬停展开"); FullScreens.Clear();

@@ -86,6 +86,8 @@ namespace ScreenLine.Tests
             application.Run();
         }
 
+        static MenuItem RevealItem(LightMenu more, string header) { return more.Items.OfType<MenuItem>().Single(item => item.Header as string == header); }
+
         // 只分发菜单事件并离屏渲染，不读取剪贴板、不移动鼠标或激活窗口。
         static void CheckTopHoverMenu()
         {
@@ -93,24 +95,38 @@ namespace ScreenLine.Tests
             string watched = Path.Combine(root, "WindowsScreenshots"); Directory.CreateDirectory(watched);
             var store = new StateStore(Path.Combine(root, "profile"));
             controller = new DesktopController(store, watched, false);
-            var topHover = controller.TrayMenu.MoreMenu.Items.OfType<MenuItem>().Single(item => item.Header as string == "鼠标移至顶部时展开");
-            Check(topHover.IsCheckable && topHover.IsChecked, "顶部悬停菜单默认开启");
-            topHover.IsChecked = false; topHover.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
-            Check(!store.State.RevealOnTopHover && !new StateStore(store.Root).State.RevealOnTopHover, "菜单关闭顶部悬停并保存");
+            var corner = RevealItem(controller.TrayMenu.MoreMenu, "鼠标移至左上角时展开");
+            var topHover = RevealItem(controller.TrayMenu.MoreMenu, "鼠标移至顶部时展开");
+            Check(corner.IsCheckable && corner.IsChecked && store.State.RevealOnTopHover && !store.State.HoverWholeEdge, "悬停展开默认左上角模式");
+            Check(topHover.IsCheckable && !topHover.IsChecked, "整条顶边模式默认不勾选");
+            topHover.IsChecked = true; topHover.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+            Check(topHover.IsChecked && !corner.IsChecked && store.State.HoverWholeEdge && new StateStore(store.Root).State.HoverWholeEdge, "勾选整条顶边后切换位置并保存，左上角取消勾选");
+            corner.IsChecked = true; corner.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+            Check(corner.IsChecked && !topHover.IsChecked && !store.State.HoverWholeEdge && !new StateStore(store.Root).State.HoverWholeEdge, "勾选左上角后切回并保存，整条顶边取消勾选");
+            corner.IsChecked = false; corner.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+            Check(!corner.IsChecked && !store.State.RevealOnTopHover && !new StateStore(store.Root).State.RevealOnTopHover, "菜单关闭悬停展开并保存");
             controller.Dispose();
             store = new StateStore(store.Root); controller = new DesktopController(store, watched, false);
             var more = controller.TrayMenu.MoreMenu;
-            topHover = more.Items.OfType<MenuItem>().Single(item => item.Header as string == "鼠标移至顶部时展开");
-            Check(!topHover.IsChecked && !store.State.RevealOnTopHover, "重启后菜单与配置保留关闭状态");
+            corner = RevealItem(more, "鼠标移至左上角时展开");
+            topHover = RevealItem(more, "鼠标移至顶部时展开");
+            Check(!corner.IsChecked && !topHover.IsChecked && !store.State.RevealOnTopHover, "重启后菜单与配置保留关闭状态");
             topHover.IsChecked = true; topHover.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
-            Check(store.State.RevealOnTopHover && new StateStore(store.Root).State.RevealOnTopHover, "菜单重新开启顶部悬停并保存");
+            Check(topHover.IsChecked && !corner.IsChecked && store.State.RevealOnTopHover && store.State.HoverWholeEdge
+                && new StateStore(store.Root).State.RevealOnTopHover && new StateStore(store.Root).State.HoverWholeEdge, "改选整条顶边可重新开启悬停展开并保存");
             foreach (var notice in Application.Current.Windows.OfType<LightNotice>().ToArray()) notice.Close();
             using (var locked = new FileStream(Path.Combine(store.Root, "state.json"), FileMode.Open, FileAccess.Read, FileShare.Read))
             {
                 topHover.IsChecked = false; topHover.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
             }
-            Check(topHover.IsChecked && store.State.RevealOnTopHover && new StateStore(store.Root).State.RevealOnTopHover, "保存失败恢复菜单勾选与内存、磁盘配置");
+            Check(topHover.IsChecked && !corner.IsChecked && store.State.RevealOnTopHover && new StateStore(store.Root).State.RevealOnTopHover, "保存失败恢复菜单勾选与内存、磁盘配置");
             Check(Application.Current.Windows.OfType<LightNotice>().Any(), "保存失败显示提示");
+            foreach (var notice in Application.Current.Windows.OfType<LightNotice>().ToArray()) notice.Close();
+            using (var locked = new FileStream(Path.Combine(store.Root, "state.json"), FileMode.Open, FileAccess.Read, FileShare.Read))
+            {
+                corner.IsChecked = true; corner.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+            }
+            Check(!corner.IsChecked && topHover.IsChecked && store.State.HoverWholeEdge && new StateStore(store.Root).State.HoverWholeEdge, "切换悬停位置保存失败时保持原来的位置和勾选");
             foreach (var notice in Application.Current.Windows.OfType<LightNotice>().ToArray()) notice.Close();
             var shortcutSwitch = more.Items.OfType<MenuItem>().Single(item => item.Header as string == "Ctrl+Alt+T 显示/收起");
             Check(shortcutSwitch.IsCheckable && shortcutSwitch.IsChecked && store.State.ToggleShortcut, "显隐快捷键开关默认开启");
@@ -124,14 +140,15 @@ namespace ScreenLine.Tests
             controller.Dispose();
             store = new StateStore(store.Root); controller = new DesktopController(store, watched, false);
             more = controller.TrayMenu.MoreMenu;
-            topHover = more.Items.OfType<MenuItem>().Single(item => item.Header as string == "鼠标移至顶部时展开");
-            shortcutSwitch = more.Items.OfType<MenuItem>().Single(item => item.Header as string == "Ctrl+Alt+T 显示/收起");
-            Check(topHover.IsChecked && !shortcutSwitch.IsChecked && controller.TrayMenu.Shortcut.Text == "", "重启后保留仅顶部悬停模式");
+            corner = RevealItem(more, "鼠标移至左上角时展开");
+            topHover = RevealItem(more, "鼠标移至顶部时展开");
+            shortcutSwitch = RevealItem(more, "Ctrl+Alt+T 显示/收起");
+            Check(topHover.IsChecked && !corner.IsChecked && store.State.HoverWholeEdge && !shortcutSwitch.IsChecked && controller.TrayMenu.Shortcut.Text == "", "重启后保留仅悬停模式及所选位置");
             shortcutSwitch.IsChecked = true; shortcutSwitch.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
             Check(shortcutSwitch.IsChecked && store.State.ToggleShortcut && new StateStore(store.Root).State.ToggleShortcut, "重新开启显隐快捷键并保存");
             foreach (var notice in Application.Current.Windows.OfType<LightNotice>().ToArray()) notice.Close();
             more.ApplyTemplate(); more.Measure(new Size(1000, 1000)); more.Arrange(new Rect(more.DesiredSize)); more.UpdateLayout();
-            Check(more.ActualWidth > 0 && more.ActualHeight > 0 && topHover.ActualWidth > 0, "包含新开关的更多操作菜单可完成布局");
+            Check(more.ActualWidth > 0 && more.ActualHeight > 0 && corner.ActualWidth > 0 && topHover.ActualWidth > 0, "包含展开方式开关的更多操作菜单可完成布局");
             var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(RenderMenu(more)));
             using (var output = File.Create(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "top-hover-more-menu.png"))) encoder.Save(output);
             Directory.CreateDirectory(store.Inbox);
@@ -397,9 +414,9 @@ namespace ScreenLine.Tests
             await controller.Start();
             Check(controller.Gallery.Items.Count == 1 && controller.Gallery.Items[0].Path == retained, "重新启动可恢复挂着的图片");
             Check(controller.Captures.CollectClipboard, "重新启动可恢复剪贴板收集设置");
-            Check(!controller.Gallery.Store.State.RevealOnTopHover
-                && !controller.TrayMenu.MoreMenu.Items.OfType<MenuItem>().Single(item => item.Header as string == "鼠标移至顶部时展开").IsChecked,
-                "重新启动后保留顶部悬停关闭状态，菜单同步取消勾选");
+            Check(!controller.Gallery.Store.State.RevealOnTopHover && !RevealItem(controller.TrayMenu.MoreMenu, "鼠标移至左上角时展开").IsChecked
+                && !RevealItem(controller.TrayMenu.MoreMenu, "鼠标移至顶部时展开").IsChecked,
+                "重新启动后保留悬停展开关闭状态，两个菜单项同步取消勾选");
             await Task.Delay(900);
             var restoredCard = controller.Shelf.CardFor(retained);
             var restoredCanvas = (System.Windows.Controls.Canvas)restoredCard.Parent;
@@ -1314,19 +1331,29 @@ namespace ScreenLine.Tests
             Check(!controller.Shelf.Revealed, "鼠标移开后自动收起");
             await Until(() => !controller.Shelf.Animating);
             Check(!controller.Shelf.Animating && !controller.Shelf.MotionWindows.Any(), "收起后停止逐帧动画并清理临时窗口");
-            SetCursorPos(bounds.Left + 400, controller.Shelf.Display.Bounds.Top + 1);
+            var hoverScreen = controller.Shelf.Display;
+            SetCursorPos(bounds.Left + 400, hoverScreen.Bounds.Top + 1);
+            await Task.Delay(600);
+            Check(!controller.Shelf.Revealed, "左上角模式下鼠标停在顶部正中间不展开");
+            SetCursorPos(hoverScreen.Bounds.Left + 2, hoverScreen.Bounds.Top + 1);
             await Until(() => controller.Shelf.Revealed);
-            Check(controller.Shelf.Revealed, "鼠标停在屏幕上沿可再次展开");
+            Check(controller.Shelf.Revealed, "鼠标停在屏幕左上角可再次展开");
             controller.Shelf.SetRevealOnTopHover(false);
             controller.Shelf.Reveal(false, false, 0);
             await Task.Delay(500);
-            Check(!controller.Shelf.Revealed, "关闭顶部悬停展开后实际鼠标停留不唤出");
+            Check(!controller.Shelf.Revealed, "关闭悬停展开后实际鼠标停留不唤出");
             controller.TrayMenu.VisibilityButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-            Check(controller.Shelf.Revealed, "关闭顶部悬停展开后托盘显示入口仍可使用");
+            Check(controller.Shelf.Revealed, "关闭悬停展开后托盘显示入口仍可使用");
             controller.Shelf.Reveal(false, false, 0);
             controller.Shelf.SetRevealOnTopHover(true);
             await Until(() => controller.Shelf.Revealed);
-            Check(controller.Shelf.Revealed, "重新开启顶部悬停展开后实际鼠标停留恢复唤出");
+            Check(controller.Shelf.Revealed, "重新开启悬停展开后实际鼠标停留恢复唤出");
+            controller.Shelf.Reveal(false, false, 0);
+            controller.Shelf.SetRevealOnTopHover(true, true);
+            SetCursorPos(bounds.Left + 400, hoverScreen.Bounds.Top + 1);
+            await Until(() => controller.Shelf.Revealed);
+            Check(controller.Shelf.Revealed, "改选整条顶边后鼠标停在顶部正中间可展开");
+            controller.Shelf.SetRevealOnTopHover(true, false);
             await CheckViewerClose();
         }
 
@@ -2093,7 +2120,8 @@ namespace ScreenLine.Tests
             Point bottomRight = trayMenu.PointToScreen(new Point(trayMenu.ActualWidth, trayMenu.ActualHeight));
             Check(topLeft.X >= screen.Bounds.Left && topLeft.Y >= screen.Bounds.Top
                 && bottomRight.X <= screen.Bounds.Right + 1 && bottomRight.Y <= screen.Bounds.Bottom + 1, "屏幕右下角的托盘菜单完整显示，没有超出屏幕");
-            Check(trayMenu.MoreMenu.Items.OfType<MenuItem>().Count(x => x.IsEnabled) == 9
+            // 9 个原有入口，加「Ctrl+Alt+T 显示/收起」和两种悬停位置中的「左上角」一项。
+            Check(trayMenu.MoreMenu.Items.OfType<MenuItem>().Count(x => x.IsEnabled) == 11
                 && trayMenu.MoreMenu.Items.OfType<MenuItem>().Any(item => item.Header as string == "区域截图")
                 && trayMenu.MoreMenu.Items.OfType<MenuItem>().Any(item => item.Header as string == "截图快捷键…"), "更多操作保留原入口并提供区域截图与快捷键设置");
             Check(trayMenu.ScreenButton.IsVisible && trayMenu.ScreenMode.Text == "跟随鼠标", "显示屏幕入口直接呈现当前模式");
@@ -2147,21 +2175,26 @@ namespace ScreenLine.Tests
             Check(trayMenu.IsOpen, "展开更多操作时主面板保持可见");
             var moreBounds = new Rect(more.PointToScreen(new Point()), more.PointToScreen(new Point(more.ActualWidth, more.ActualHeight)));
             Check(screen.Bounds.Contains((int)moreBounds.Left, (int)moreBounds.Top) && moreBounds.Right <= screen.Bounds.Right + 1 && moreBounds.Bottom <= screen.Bounds.Bottom + 1, "更多操作靠近屏幕边缘也完整显示");
-            var topHover = more.Items.OfType<MenuItem>().Single(item => item.Header as string == "鼠标移至顶部时展开");
-            Check(topHover.IsCheckable && topHover.IsChecked, "顶部悬停展开菜单默认勾选");
-            await ClickMenu(topHover);
-            Check(!topHover.IsChecked && !store.State.RevealOnTopHover && !new StateStore(store.Root).State.RevealOnTopHover,
-                "实际点击关闭顶部悬停展开并保存");
+            var corner = RevealItem(more, "鼠标移至左上角时展开");
+            var topHover = RevealItem(more, "鼠标移至顶部时展开");
+            Check(corner.IsCheckable && corner.IsChecked && !topHover.IsChecked, "悬停展开菜单默认勾选左上角");
+            await ClickMenu(corner);
+            Check(!corner.IsChecked && !store.State.RevealOnTopHover && !new StateStore(store.Root).State.RevealOnTopHover,
+                "实际点击关闭悬停展开并保存");
             await ReopenMoreMenu(screen);
             await ClickMenu(topHover);
-            Check(topHover.IsChecked && store.State.RevealOnTopHover && new StateStore(store.Root).State.RevealOnTopHover,
-                "实际点击重新开启顶部悬停展开并保存");
+            Check(topHover.IsChecked && !corner.IsChecked && store.State.HoverWholeEdge && new StateStore(store.Root).State.HoverWholeEdge,
+                "实际点击改选整条顶边并保存");
+            await ReopenMoreMenu(screen);
+            await ClickMenu(corner);
+            Check(corner.IsChecked && !topHover.IsChecked && !store.State.HoverWholeEdge && !new StateStore(store.Root).State.HoverWholeEdge,
+                "实际点击改回左上角并保存");
             await ReopenMoreMenu(screen);
             using (var locked = new FileStream(Path.Combine(store.Root, "state.json"), FileMode.Open, FileAccess.Read, FileShare.Read))
                 await ClickMenu(topHover);
-            Check(topHover.IsChecked && store.State.RevealOnTopHover && new StateStore(store.Root).State.RevealOnTopHover,
-                "顶部悬停设置保存失败后恢复勾选和配置");
-            Check(Application.Current.Windows.OfType<LightNotice>().Any(), "顶部悬停设置保存失败时显示提示");
+            Check(corner.IsChecked && !topHover.IsChecked && !store.State.HoverWholeEdge && !new StateStore(store.Root).State.HoverWholeEdge,
+                "悬停位置保存失败后恢复勾选和配置");
+            Check(Application.Current.Windows.OfType<LightNotice>().Any(), "悬停位置保存失败时显示提示");
             foreach (var notice in Application.Current.Windows.OfType<LightNotice>().ToArray()) notice.Close();
             await ReopenMoreMenu(screen);
             await ClickMenu(more.Items.OfType<MenuItem>().Single(item => item.Header as string == "全部取下（保留文件）"));

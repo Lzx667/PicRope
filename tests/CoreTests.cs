@@ -257,6 +257,16 @@ namespace ScreenLine.Tests
                 var legacy = new StateStore(store.Root);
                 Check(legacy.State.RevealOnTopHover && !legacy.State.HoverPreview && legacy.State.Images.Single() == "旧截图.png");
             });
+            Run("悬停位置默认左上角，整条顶边可保存恢复，旧配置升级后仍是左上角", delegate
+            {
+                var store = new StateStore(Path.Combine(root, "hover-zone-profile"));
+                Check(!store.State.HoverWholeEdge);
+                store.State.HoverWholeEdge = true; store.Save();
+                Check(new StateStore(store.Root).State.HoverWholeEdge);
+                File.WriteAllText(Path.Combine(store.Root, "state.json"), "{\"Images\":[\"旧截图.png\"],\"RevealOnTopHover\":true}");
+                var legacy = new StateStore(store.Root);
+                Check(!legacy.State.HoverWholeEdge && legacy.State.RevealOnTopHover && legacy.State.Images.Single() == "旧截图.png");
+            });
             Run("显隐快捷键开关默认开启，旧配置兼容，可保存恢复", delegate
             {
                 var store = new StateStore(Path.Combine(root, "toggle-switch-profile"));

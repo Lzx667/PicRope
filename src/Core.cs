@@ -20,6 +20,8 @@ namespace ScreenLine
         public bool AutoHang { get; set; }
         public bool HoverPreview { get; set; }
         public bool RevealOnTopHover { get; set; }
+        // 悬停展开的触发位置：false 只认屏幕左上角，true 为整条顶边。旧配置没有这一项，读取时保持默认的左上角。
+        public bool HoverWholeEdge { get; set; }
         public bool ToggleShortcut { get; set; }
         public string Theme { get; set; }
         public string DisplayDevice { get; set; }
