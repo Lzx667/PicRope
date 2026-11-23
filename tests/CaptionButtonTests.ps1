@@ -69,9 +69,10 @@ $copyPath = Join-Path $fixtureRoot ($RunName + '-WindowsNative.FixtureCopy.cs')
 [IO.File]::WriteAllText($integrityPath, ($integrity -join [Environment]::NewLine) + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
 [IO.File]::WriteAllText($copyPath, $native, [Text.UTF8Encoding]::new($false))
 $framework = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319'
-$references = @('/r:System.dll', '/r:System.Core.dll', '/r:System.Drawing.dll', '/r:System.Windows.Forms.dll', "/r:$framework\WPF\PresentationCore.dll", "/r:$framework\WPF\PresentationFramework.dll", "/r:$framework\WPF\WindowsBase.dll", "/r:$framework\System.Xaml.dll")
+$references = @('/r:System.dll', '/r:System.Core.dll', '/r:System.Drawing.dll', '/r:System.Windows.Forms.dll', '/r:System.Web.Extensions.dll', "/r:$framework\WPF\PresentationCore.dll", "/r:$framework\WPF\PresentationFramework.dll", "/r:$framework\WPF\WindowsBase.dll", "/r:$framework\System.Xaml.dll")
 $executable = Join-Path $fixtureRoot ($RunName + '-CaptionButtonTests.exe')
-& (Join-Path $framework 'csc.exe') /nologo /target:exe /platform:x64 /codepage:65001 /main:ScreenLine.Tests.CaptionButtonTests "/out:$executable" $references $copyPath (Join-Path $PSScriptRoot 'CaptionButtonTests.cs')
+# WindowsNative 的快捷键校验依赖 Core.cs 中的 ShortcutRules，需连同它用到的 SpringMotion.cs 一并编译。
+& (Join-Path $framework 'csc.exe') /nologo /target:exe /platform:x64 /codepage:65001 /main:ScreenLine.Tests.CaptionButtonTests "/out:$executable" $references $copyPath (Join-Path $projectRoot 'src\SpringMotion.cs') (Join-Path $projectRoot 'src\Core.cs') (Join-Path $PSScriptRoot 'CaptionButtonTests.cs')
 if ($LASTEXITCODE -ne 0) { throw 'Fixture compilation failed' }
 & $executable 2>&1 | Tee-Object -FilePath (Join-Path $fixtureRoot ($RunName + '.log'))
 if ($LASTEXITCODE -ne 0) { throw 'Fixture regression failed' }
