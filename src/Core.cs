@@ -18,6 +18,8 @@ namespace ScreenLine
         public bool CollectClipboard { get; set; }
         public bool CollectTextClipboard { get; set; }
         public bool AutoHang { get; set; }
+        // 隔天下绳：新的一天开始后，之前上绳的图片自动取下到篮子。旧配置没有这一项，读取时保持默认开启。
+        public bool AutoTakeDown { get; set; }
         public bool HoverPreview { get; set; }
         public bool RevealOnTopHover { get; set; }
         // 悬停展开的触发位置：false 只认屏幕左上角，true 为整条顶边。旧配置没有这一项，读取时保持默认的左上角。
@@ -32,9 +34,11 @@ namespace ScreenLine
         public uint ToggleKey { get; set; }
         public List<string> Images { get; set; }
         public List<string> Collection { get; set; }
+        // 绳上各图片的上绳时间（UTC），路径为键，与 Images 一起保存。
+        public Dictionary<string, DateTime> Hung { get; set; }
         public List<TextItem> Texts { get; set; }
 
-        public SavedState() { Images = new List<string>(); Collection = new List<string>(); Texts = new List<TextItem>(); Theme = "classic"; AutoHang = true; HoverPreview = true; RevealOnTopHover = true; ToggleShortcut = true; CaptureModifiers = 3; CaptureKey = (uint)'S'; ToggleModifiers = 3; ToggleKey = (uint)'T'; }
+        public SavedState() { Images = new List<string>(); Collection = new List<string>(); Hung = new Dictionary<string, DateTime>(); Texts = new List<TextItem>(); Theme = "classic"; AutoHang = true; AutoTakeDown = true; HoverPreview = true; RevealOnTopHover = true; ToggleShortcut = true; CaptureModifiers = 3; CaptureKey = (uint)'S'; ToggleModifiers = 3; ToggleKey = (uint)'T'; }
     }
 
     internal static class ShortcutRules
@@ -67,6 +71,7 @@ namespace ScreenLine
                 State = serializer.Deserialize<SavedState>(File.ReadAllText(file, Encoding.UTF8)) ?? new SavedState();
                 if (State.Images == null) State.Images = new List<string>();
                 if (State.Collection == null) State.Collection = new List<string>();
+                if (State.Hung == null) State.Hung = new Dictionary<string, DateTime>();
                 if (State.Texts == null) State.Texts = new List<TextItem>();
                 if (!ShortcutRules.IsValid(State.ToggleModifiers, State.ToggleKey)) { State.ToggleModifiers = 3; State.ToggleKey = (uint)'T'; }
             }
@@ -505,13 +510,29 @@ namespace ScreenLine
     {
         public readonly string Path;
         public ImageContent Image;
+        // 上绳时间（UTC），隔天下绳按它判断图片是否属于新的一天。
+        public DateTime Hung;
         public DateTime Written;
 
         public CaptureItem(string path, ImageContent image)
         {
             Path = System.IO.Path.GetFullPath(path);
             Image = image.ForFile(Path);
+            Hung = DateTime.UtcNow;
             Written = File.GetLastWriteTimeUtc(Path);
+        }
+    }
+
+    // 隔天下绳用的一天起点：凌晨 StartHour 之前仍算前一天，熬夜跨过零点时绳上的图片不会被取走。
+    internal static class RopeDay
+    {
+        public const int StartHour = 4;
+
+        public static DateTime Start(DateTime now)
+        {
+            DateTime day = now.Date;
+            if (now.Hour < StartHour) day = day.AddDays(-1);
+            return day.AddHours(StartHour);
         }
     }
 
@@ -537,16 +558,47 @@ namespace ScreenLine
             return item;
         }
 
-        public void Add(string path, ImageContent image)
+        public void Add(string path, ImageContent image) { Add(path, image, DateTime.UtcNow); }
+
+        // hung 是上绳时间（UTC）：启动恢复时沿用保存的值，其余场合取当前时间。
+        public void Add(string path, ImageContent image, DateTime hung)
         {
             if (Contains(path)) return;
             var item = Collected.FirstOrDefault(i => FileRules.SameFile(i.Path, path));
             if (item == null) { item = new CaptureItem(path, image); Collected.Add(item); }
             else if (item.Image != image) { item.Image = image.ForFile(path); item.Written = File.GetLastWriteTimeUtc(path); }
+            item.Hung = hung;
             Items.Add(item);
             if (Items.Count > 50) Items.RemoveAt(0);
             Save();
             Notify();
+        }
+
+        // 启动时把保存时挂在绳上的图片放回绳子。hung 是保存的上绳时间表：恢复过程中每次保存都会重建
+        // 内存里的那一份数据，所以由调用方留住原表；旧记录没有保存时按文件创建时间估算。
+        public void Restore(string path, ImageContent image, Dictionary<string, DateTime> hung)
+        {
+            DateTime time;
+            if (hung == null || !hung.TryGetValue(path, out time)) time = File.GetCreationTimeUtc(path);
+            Add(path, image, time);
+        }
+
+        // 隔天下绳：取下上绳时间（本地）早于 dayStart 的图片，留在篮子里；keep 返回 true 的（如贴在桌面的）不动。
+        public int TakeDownBefore(DateTime dayStart, Func<CaptureItem, bool> keep)
+        {
+            var expired = Items.Where(item => item.Hung.ToLocalTime() < dayStart && (keep == null || !keep(item))).ToArray();
+            if (expired.Length > 0) RemoveMany(expired);
+            return expired.Length;
+        }
+
+        // 贴在桌面的图片回到绳子时按现在重新计时，当天不会被隔天下绳取走。
+        public void Rehang(CaptureItem item)
+        {
+            if (!Items.Contains(item)) return;
+            DateTime previous = item.Hung;
+            item.Hung = DateTime.UtcNow;
+            try { Save(); }
+            catch { item.Hung = previous; throw; }
         }
 
         public void Remove(CaptureItem item)
@@ -562,7 +614,7 @@ namespace ScreenLine
             var previous = Items.ToArray();
             if (Items.RemoveAll(item => removed.Contains(item)) == 0) return;
             try { Save(); }
-            catch { Items.Clear(); Items.AddRange(previous); Store.State.Images = Items.Select(i => i.Path).ToList(); throw; }
+            catch { Items.Clear(); Items.AddRange(previous); Store.State.Images = Items.Select(i => i.Path).ToList(); Store.State.Hung = HungTimes(); throw; }
             Notify();
         }
 
@@ -586,6 +638,7 @@ namespace ScreenLine
                 if (hanging >= 0) Items.Insert(hanging, item);
                 if (collected >= 0) Collected.Insert(collected, item);
                 Store.State.Images = Items.Select(i => i.Path).ToList();
+                Store.State.Hung = HungTimes();
                 Store.State.Collection = Collected.Select(i => i.Path).ToList();
                 throw;
             }
@@ -596,7 +649,8 @@ namespace ScreenLine
         {
             int hanging = Items.IndexOf(item), collected = Collected.IndexOf(item);
             if (collected < 0) return null;
-            var copy = new CaptureItem(path, item.Image);
+            // 编辑只换文件，图片仍在绳上原来的位置，上绳时间沿用。
+            var copy = new CaptureItem(path, item.Image); copy.Hung = item.Hung;
             if (hanging >= 0) Items[hanging] = copy;
             Collected[collected] = copy;
             try { Save(); }
@@ -605,6 +659,7 @@ namespace ScreenLine
                 if (hanging >= 0) Items[hanging] = item;
                 Collected[collected] = item;
                 Store.State.Images = Items.Select(i => i.Path).ToList();
+                Store.State.Hung = HungTimes();
                 Store.State.Collection = Collected.Select(i => i.Path).ToList();
                 throw;
             }
@@ -627,7 +682,10 @@ namespace ScreenLine
         {
             Store.State.Images = Items.Select(i => i.Path).ToList();
             Store.State.Collection = Collected.Select(i => i.Path).ToList();
+            Store.State.Hung = HungTimes();
             Store.Save();
         }
+
+        Dictionary<string, DateTime> HungTimes() { return Items.ToDictionary(i => i.Path, i => i.Hung); }
     }
 }

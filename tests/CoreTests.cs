@@ -245,6 +245,102 @@ namespace ScreenLine.Tests
                 File.WriteAllText(Path.Combine(store.Root, "state.json"), "{\"Images\":[\"旧截图.png\"]}");
                 Check(new StateStore(store.Root).State.AutoHang);
             });
+            Run("隔天下绳只取下之前上绳的图片，当天上绳的保留", delegate
+            {
+                var store = new StateStore(Path.Combine(root, "take-down-profile"));
+                var gallery = new Gallery(store);
+                string old = WritePicture("往天.png", 130), fresh = WritePicture("今天.png", 131);
+                gallery.Add(old, ImageContent.Read(old), DateTime.UtcNow.AddDays(-2));
+                gallery.Add(fresh, ImageContent.Read(fresh));
+                int changes = 0; gallery.Changed += delegate { changes++; };
+                DateTime today = RopeDay.Start(DateTime.Now);
+                Check(gallery.TakeDownBefore(today, null) == 1);
+                Check(gallery.Items.Count == 1 && FileRules.SameFile(gallery.Items[0].Path, fresh) && gallery.Collected.Count == 2 && File.Exists(old) && changes == 1);
+                var restored = new StateStore(store.Root);
+                Check(restored.State.Images.Count == 1 && FileRules.SameFile(restored.State.Images[0], fresh) && restored.State.Collection.Count == 2
+                    && restored.State.Hung.Count == 1 && restored.State.Hung.ContainsKey(gallery.Items[0].Path));
+                Check(gallery.TakeDownBefore(today, null) == 0 && changes == 1);
+            });
+            Run("一天从凌晨四点算起，之前的时刻仍归前一天", delegate
+            {
+                Check(RopeDay.Start(new DateTime(2026, 11, 24, 3, 59, 0)) == new DateTime(2026, 11, 23, 4, 0, 0));
+                Check(RopeDay.Start(new DateTime(2026, 11, 24, 4, 0, 0)) == new DateTime(2026, 11, 24, 4, 0, 0));
+                Check(RopeDay.Start(new DateTime(2026, 11, 24, 23, 30, 0)) == new DateTime(2026, 11, 24, 4, 0, 0));
+                Check(RopeDay.Start(new DateTime(2026, 11, 25, 1, 0, 0)) == new DateTime(2026, 11, 24, 4, 0, 0));
+            });
+            Run("隔天下绳保留贴在桌面的图片", delegate
+            {
+                var gallery = new Gallery(new StateStore(Path.Combine(root, "take-down-desktop-profile")));
+                string pinned = WritePicture("桌面贴图.png", 132), loose = WritePicture("绳上.png", 133);
+                gallery.Add(pinned, ImageContent.Read(pinned), DateTime.UtcNow.AddDays(-1));
+                gallery.Add(loose, ImageContent.Read(loose), DateTime.UtcNow.AddDays(-1));
+                Check(gallery.TakeDownBefore(RopeDay.Start(DateTime.Now), item => FileRules.SameFile(item.Path, pinned)) == 1);
+                Check(gallery.Items.Count == 1 && FileRules.SameFile(gallery.Items[0].Path, pinned) && gallery.Collected.Count == 2);
+            });
+            Run("重新挂上和桌面贴图返回后按新时间计算，编辑副本沿用原上绳时间", delegate
+            {
+                var gallery = new Gallery(new StateStore(Path.Combine(root, "take-down-rehang-profile")));
+                string file = WritePicture("重挂.png", 134), copy = Path.Combine(root, "重挂副本.png");
+                DateTime old = DateTime.UtcNow.AddDays(-2);
+                gallery.Add(file, ImageContent.Read(file), old);
+                File.Copy(file, copy);
+                var item = gallery.Replace(gallery.Items[0], copy);
+                Check(gallery.Items.Count == 1 && gallery.Items[0] == item && item.Hung == old);
+                DateTime before = DateTime.UtcNow;
+                gallery.Rehang(item);
+                // 上绳时间写入配置时只保留到毫秒。
+                DateTime saved = new StateStore(gallery.Store.Root).State.Hung[item.Path];
+                Check(item.Hung >= before && Math.Abs((saved - item.Hung).TotalMilliseconds) < 1);
+                Check(gallery.TakeDownBefore(RopeDay.Start(DateTime.Now), null) == 0 && gallery.Items.Count == 1);
+                gallery.Remove(item);
+                before = DateTime.UtcNow;
+                gallery.Add(copy, ImageContent.Read(copy));
+                Check(gallery.Items[0].Hung >= before && gallery.TakeDownBefore(RopeDay.Start(DateTime.Now), null) == 0);
+            });
+            Run("启动恢复时每张图都沿用保存的上绳时间，旧记录按文件创建时间", delegate
+            {
+                var gallery = new Gallery(new StateStore(Path.Combine(root, "take-down-restore-profile")));
+                string first = WritePicture("恢复_1.png", 136), second = WritePicture("恢复_2.png", 137);
+                DateTime older = DateTime.UtcNow.AddDays(-3), newer = DateTime.UtcNow.AddDays(-1);
+                var saved = new System.Collections.Generic.Dictionary<string, DateTime> { { first, older }, { second, newer } };
+                // 与启动恢复相同：每恢复一张都会保存一次，内存里的时间表随之重建。
+                gallery.Restore(first, ImageContent.Read(first), saved);
+                gallery.Restore(second, ImageContent.Read(second), saved);
+                Check(gallery.Items[0].Hung == older && gallery.Items[1].Hung == newer);
+                Check(gallery.TakeDownBefore(RopeDay.Start(DateTime.Now), null) == 2 && gallery.Items.Count == 0 && gallery.Collected.Count == 2);
+                string legacy = WritePicture("旧记录.png", 138);
+                gallery.Restore(legacy, ImageContent.Read(legacy), null);
+                Check(gallery.Items[0].Hung == File.GetCreationTimeUtc(legacy));
+                gallery.Restore(second, ImageContent.Read(second), new System.Collections.Generic.Dictionary<string, DateTime> { { second, newer } });
+                Check(gallery.Items[1].Hung == newer);
+            });
+            Run("隔天下绳开关默认开启，旧版配置同样默认开启", delegate
+            {
+                var store = new StateStore(Path.Combine(root, "auto-take-down-profile"));
+                Check(store.State.AutoTakeDown && store.State.Hung != null);
+                store.State.AutoTakeDown = false; store.Save();
+                Check(!new StateStore(store.Root).State.AutoTakeDown);
+                File.WriteAllText(Path.Combine(store.Root, "state.json"), "{\"Images\":[\"旧截图.png\"]}");
+                var legacy = new StateStore(store.Root);
+                Check(legacy.State.AutoTakeDown && legacy.State.Hung != null && legacy.State.Hung.Count == 0 && legacy.State.Images.Single() == "旧截图.png");
+            });
+            Run("隔天下绳保存失败时恢复绳上图片和上绳时间，不通知界面", delegate
+            {
+                var store = new StateStore(Path.Combine(root, "take-down-failure-profile"));
+                var gallery = new Gallery(store);
+                string file = WritePicture("隔天取下失败.png", 63);
+                DateTime old = new DateTime(2026, 1, 2, 3, 4, 5, DateTimeKind.Utc);
+                gallery.Add(file, ImageContent.Read(file), old);
+                int changes = 0; gallery.Changed += delegate { changes++; };
+                string blocker = Path.Combine(store.Root, "state.json.tmp");
+                Directory.CreateDirectory(blocker);
+                bool saveFailed = false;
+                try { gallery.TakeDownBefore(RopeDay.Start(DateTime.Now), null); } catch (IOException) { saveFailed = true; } catch (UnauthorizedAccessException) { saveFailed = true; }
+                Directory.Delete(blocker);
+                Check(saveFailed && changes == 0 && gallery.Items.Count == 1 && gallery.Items[0].Hung == old
+                    && store.State.Hung.Single().Value == old && new StateStore(store.Root).State.Images.Count == 1);
+                Check(gallery.TakeDownBefore(RopeDay.Start(DateTime.Now), null) == 1 && changes == 1 && gallery.Items.Count == 0 && gallery.Collected.Count == 1);
+            });
             Run("顶部悬停展开默认开启，关闭和重新开启后可恢复", delegate
             {
                 var store = new StateStore(Path.Combine(root, "top-hover-profile"));

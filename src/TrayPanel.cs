@@ -60,7 +60,7 @@ namespace ScreenLine
 </ResourceDictionary>");
 
         internal readonly Button VisibilityButton, BasketButton, TextButton, AppearanceButton, ExitButton, MoreButton, ScreenButton;
-        internal readonly CheckBox Pictures, Text, AutoHang;
+        internal readonly CheckBox Pictures, Text, AutoHang, AutoTakeDown;
         internal readonly LightMenu MoreMenu = new LightMenu("更多操作", "");
         internal readonly LightMenu ScreenMenu = new LightMenu("显示屏幕", "") { Width = 320 };
         internal readonly TextBlock ScreenMode = new TextBlock { FontSize = 11, Foreground = LightTheme.Brush("#65717F"), VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 0, 22, 0) };
@@ -97,6 +97,7 @@ namespace ScreenLine
             Pictures = Toggle("图片", "picture", "收集剪贴板图片"); Text = Toggle("文字", "text", "收集剪贴板文字");
             panel.Children.Add(Pair(Pictures, Text));
             AutoHang = Toggle("新图片自动上绳", "show", "新图片自动上绳"); panel.Children.Add(AutoHang);
+            AutoTakeDown = Toggle("第二天自动下绳", "clear", "第二天自动下绳"); panel.Children.Add(AutoTakeDown);
             panel.Children.Add(Divider());
             MoreButton = Action("更多操作", "more");
             var arrow = Icon("chevron"); arrow.Width = 13; arrow.Height = 13; arrow.HorizontalAlignment = HorizontalAlignment.Right;

@@ -37,6 +37,9 @@ namespace ScreenLine
         readonly CheckBox collect;
         readonly CheckBox collectText;
         readonly CheckBox autoHang;
+        readonly CheckBox autoTakeDown;
+        readonly DispatcherTimer dayTimer = new DispatcherTimer { Interval = TimeSpan.FromMinutes(1) };
+        DateTime nextDay = DateTime.MaxValue;
         internal readonly TrayPanel TrayMenu;
         internal AppearanceWindow Appearance { get; private set; }
         internal BasketWindow Basket { get; private set; }
@@ -95,6 +98,11 @@ namespace ScreenLine
             autoHang = TrayMenu.AutoHang;
             TrayMenu.OnToggle(autoHang, Captures.AutoHang, delegate(bool value) { if (Captures.AutoHang != value) Captures.AutoHang = value; });
             Gallery.Changed += SyncAutoHang;
+            autoTakeDown = TrayMenu.AutoTakeDown;
+            TrayMenu.OnToggle(autoTakeDown, store.State.AutoTakeDown, SetAutoTakeDown);
+            dayTimer.Tick += DayTick;
+            // 睡眠唤醒后立即检查，不必等到下一次定时。
+            SystemEvents.PowerModeChanged += PowerChanged;
             collect = TrayMenu.Pictures;
             TrayMenu.OnToggle(collect, Captures.CollectClipboard, delegate(bool value) { Captures.CollectClipboard = value; Shelf.Update(); });
             collectText = TrayMenu.Text;
@@ -179,6 +187,9 @@ namespace ScreenLine
             Shelf.Show();
             Shelf.Reveal(true, false, 4);
             await Captures.Start();
+            TakeDownPreviousDay();
+            nextDay = RopeDay.Start(DateTime.Now).AddDays(1);
+            dayTimer.Start();
             if (automaticUpdates) updateTimer.Start();
         }
 
@@ -314,6 +325,44 @@ namespace ScreenLine
         }
 
         void SyncAutoHang() { autoHang.IsChecked = Captures.AutoHang; }
+
+        // 托盘「第二天自动下绳」开关；打开时立即按今天检查一次。
+        void SetAutoTakeDown(bool value)
+        {
+            var state = Gallery.Store.State;
+            if (state.AutoTakeDown == value) return;
+            state.AutoTakeDown = value;
+            try { Gallery.Store.Save(); }
+            catch (Exception error)
+            {
+                state.AutoTakeDown = !value; autoTakeDown.IsChecked = !value;
+                Gallery.Store.Log(error); Notice("设置保存失败"); return;
+            }
+            if (value) TakeDownPreviousDay();
+        }
+
+        // 隔天下绳：取下今天起点之前上绳的图片，留在篮子里。启动、跨过分界点、睡眠唤醒和打开开关时都会调用。
+        void TakeDownPreviousDay()
+        {
+            if (disposed || !Gallery.Store.State.AutoTakeDown) return;
+            int count;
+            try { count = Gallery.TakeDownBefore(RopeDay.Start(DateTime.Now), Shelf.IsOnDesktop); }
+            catch (Exception error) { Gallery.Store.Log(error); return; }
+            if (count > 0) Notice("已自动取下 " + count + " 张，可在图片篮子找回");
+        }
+
+        // 定时器只负责发现跨天；睡眠期间错过的分界点在唤醒后的第一次检查时补上。
+        void DayTick(object sender, EventArgs args)
+        {
+            if (DateTime.Now < nextDay) return;
+            nextDay = RopeDay.Start(DateTime.Now).AddDays(1);
+            TakeDownPreviousDay();
+        }
+
+        void PowerChanged(object sender, PowerModeChangedEventArgs args)
+        {
+            if (args.Mode == PowerModes.Resume) Application.Current.Dispatcher.BeginInvoke(new Action(TakeDownPreviousDay));
+        }
 
         void SyncScreens()
         {
@@ -498,7 +547,8 @@ namespace ScreenLine
 
         public void Dispose()
         {
-            disposed = true; updateTimer.Stop(); updateLifetime.Cancel();
+            disposed = true; updateTimer.Stop(); dayTimer.Stop(); updateLifetime.Cancel();
+            SystemEvents.PowerModeChanged -= PowerChanged;
             if (Capture != null) Capture.Close();
             if (ShortcutSettings != null) ShortcutSettings.Close();
             if (updateWindow != null) updateWindow.Close();

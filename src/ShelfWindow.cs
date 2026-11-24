@@ -407,6 +407,13 @@ namespace ScreenLine
             return gallery.Items.Where(item => cards.ContainsKey(item.Path) && !cards[item.Path].Detached).ToArray();
         }
 
+        // 贴在桌面的图片不参与隔天下绳。
+        internal bool IsOnDesktop(CaptureItem item)
+        {
+            ShotCard card;
+            return cards.TryGetValue(item.Path, out card) && card.Detached;
+        }
+
         public void ApplyTheme(LineTheme theme)
         {
             Appearance = theme;
@@ -606,6 +613,8 @@ namespace ScreenLine
                 {
                     pins.Remove(card.Item.Path);
                     if (closing || card.IsDisposed) return;
+                    // 回到绳子后按现在重新计时，当天不会被隔天下绳取走。
+                    try { gallery.Rehang(card.Item); } catch (Exception error) { gallery.Store.Log(error); }
                     card.Detached = false;
                     card.ResetClip();
                     card.BeginFlight();

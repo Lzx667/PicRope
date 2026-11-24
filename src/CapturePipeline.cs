@@ -80,6 +80,8 @@ namespace ScreenLine
             AttachWatcher();
             timer.Start();
             var saved = gallery.Store.State.Images.ToArray();
+            // 恢复过程中每次保存都会重建内存里的上绳时间表，先留住保存的那一份。
+            var hung = gallery.Store.State.Hung;
             var collected = saved.Concat(gallery.Store.State.Collection);
             if (Directory.Exists(gallery.Store.Inbox))
                 collected = collected.Concat(Directory.EnumerateFiles(gallery.Store.Inbox).Where(FileRules.IsImage));
@@ -92,7 +94,7 @@ namespace ScreenLine
                 {
                     ImageContent image = await Task.Run(() => ImageContent.Read(path, false));
                     if (disposed) return;
-                    if (saved.Contains(path, StringComparer.OrdinalIgnoreCase)) gallery.Add(path, image);
+                    if (saved.Contains(path, StringComparer.OrdinalIgnoreCase)) gallery.Restore(path, image, hung);
                     else gallery.Collect(path, image);
                 }
                 catch (IOException) { }

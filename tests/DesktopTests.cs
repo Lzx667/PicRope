@@ -48,8 +48,9 @@ namespace ScreenLine.Tests
                 return;
             }
             bool topHoverOnly = arguments.Contains("--top-hover");
+            bool takeDownOnly = arguments.Contains("--take-down");
             bool menuInputProbe = arguments.Contains("--menu-input-probe");
-            bool passiveInput = topHoverOnly || menuInputProbe || arguments.Contains("--scroll-bounds") || arguments.Contains("--basket-appearance") || arguments.Contains("--basket-motion");
+            bool passiveInput = topHoverOnly || takeDownOnly || menuInputProbe || arguments.Contains("--scroll-bounds") || arguments.Contains("--basket-appearance") || arguments.Contains("--basket-motion");
             var application = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
             LightTheme.Install(application);
             application.DispatcherUnhandledException += delegate(object sender, System.Windows.Threading.DispatcherUnhandledExceptionEventArgs args)
@@ -63,6 +64,7 @@ namespace ScreenLine.Tests
                 try
                 {
                     if (topHoverOnly) CheckTopHoverMenu();
+                    else if (takeDownOnly) await CheckTakeDown();
                     else if (menuInputProbe) await CheckMenuInputProbe();
                     else await Run(arguments.Contains("--caption-motion"), arguments.Contains("--visibility"), arguments.Contains("--menus"), arguments.Contains("--editor"), arguments.Contains("--discard"), arguments.Contains("--shelf-motion"), arguments.Contains("--pins"), arguments.Contains("--themes"), arguments.Contains("--copied"), arguments.Contains("--wind"), arguments.Contains("--basket"), arguments.Contains("--scroll-bounds"), arguments.Contains("--basket-appearance"), arguments.Contains("--basket-motion"));
                     Console.WriteLine(Environment.ExitCode == 2 ? "桌面测试：跳过物理输入验证" : "桌面测试：" + checks + " 项通过");
@@ -165,6 +167,58 @@ namespace ScreenLine.Tests
             Check(controller.Gallery.Collected.Any(item => item.Path == path) && Application.Current.Windows.OfType<LightNotice>().Any(),
                 "全部取下后图片仍在篮子，并显示提示");
             foreach (var notice in Application.Current.Windows.OfType<LightNotice>().ToArray()) notice.Close();
+        }
+
+        // 只验证启动时的隔天下绳与托盘开关，不移动鼠标、不写入剪贴板。
+        static async Task CheckTakeDown()
+        {
+            string root = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "test-data", "desktop-" + Guid.NewGuid().ToString("N"));
+            string watched = Path.Combine(root, "WindowsScreenshots"); Directory.CreateDirectory(watched);
+            var store = new StateStore(Path.Combine(root, "profile"));
+            Directory.CreateDirectory(store.Inbox);
+            string old = Path.Combine(store.Inbox, "往天.png"), fresh = Path.Combine(store.Inbox, "今天.png");
+            File.WriteAllBytes(old, Asset("往天", "隔天下绳", Colors.SlateBlue));
+            File.WriteAllBytes(fresh, Asset("今天", "留在绳上", Colors.SlateBlue));
+            store.State.Images = new[] { old, fresh }.ToList();
+            store.State.Collection = new[] { old, fresh }.ToList();
+            store.State.Hung = new System.Collections.Generic.Dictionary<string, DateTime> { { old, DateTime.UtcNow.AddDays(-2) }, { fresh, DateTime.UtcNow } };
+            store.Save();
+            controller = new DesktopController(store, watched, false);
+            foreach (var notice in Application.Current.Windows.OfType<LightNotice>().ToArray()) notice.Close();
+            Check(controller.TrayMenu.AutoTakeDown.IsChecked == true, "隔天下绳开关默认开启");
+            var tray = controller.TrayMenu;
+            tray.Measure(new Size(1000, 1000)); tray.Arrange(new Rect(tray.DesiredSize)); tray.UpdateLayout();
+            Console.WriteLine("托盘主面板尺寸：" + tray.ActualWidth + " × " + tray.ActualHeight);
+            Check(tray.ActualHeight < 540 && tray.ActualWidth <= 360, "加入隔天下绳开关后托盘主面板仍然紧凑");
+            await controller.Start();
+            controller.Shelf.Reveal(false, false, 0);
+            Check(controller.Gallery.Items.Count == 1 && controller.Gallery.Items[0].Path == fresh && controller.Gallery.Items[0].Hung >= DateTime.UtcNow.AddMinutes(-1),
+                "启动后往天上绳的图片被取下，当天上绳的保留并沿用上绳时间");
+            Check(controller.Gallery.Collected.Count == 2 && File.Exists(old) && !controller.Gallery.Contains(old), "取下的图片仍在篮子里，文件保留");
+            var saved = new StateStore(store.Root).State;
+            Check(saved.Images.Count == 1 && saved.Images[0] == fresh && saved.Hung.Count == 1, "取下后绳上顺序与上绳时间已保存");
+            Check(Application.Current.Windows.OfType<LightNotice>().Any(), "自动取下后显示提示");
+            foreach (var notice in Application.Current.Windows.OfType<LightNotice>().ToArray()) notice.Close();
+            controller.TrayMenu.AutoTakeDown.IsChecked = false;
+            Check(!store.State.AutoTakeDown && !new StateStore(store.Root).State.AutoTakeDown, "托盘关闭隔天下绳并保存");
+            controller.Gallery.Add(old, ImageContent.Read(old), DateTime.UtcNow.AddDays(-2));
+            typeof(DesktopController).GetMethod("TakeDownPreviousDay", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).Invoke(controller, null);
+            Check(controller.Gallery.Items.Count == 2 && !Application.Current.Windows.OfType<LightNotice>().Any(), "关闭后跨天检查不取下图片");
+            controller.TrayMenu.AutoTakeDown.IsChecked = true;
+            Check(store.State.AutoTakeDown && controller.Gallery.Items.Count == 1 && !controller.Gallery.Contains(old)
+                && Application.Current.Windows.OfType<LightNotice>().Any(), "打开开关后立即取下往天的图片并提示");
+            foreach (var notice in Application.Current.Windows.OfType<LightNotice>().ToArray()) notice.Close();
+            using (var locked = new FileStream(Path.Combine(store.Root, "state.json"), FileMode.Open, FileAccess.Read, FileShare.Read))
+            {
+                controller.TrayMenu.AutoTakeDown.IsChecked = false;
+            }
+            Check(controller.TrayMenu.AutoTakeDown.IsChecked == true && store.State.AutoTakeDown && new StateStore(store.Root).State.AutoTakeDown
+                && Application.Current.Windows.OfType<LightNotice>().Any(), "开关保存失败时恢复勾选与配置并提示");
+            foreach (var notice in Application.Current.Windows.OfType<LightNotice>().ToArray()) notice.Close();
+            controller.TrayMenu.AutoTakeDown.IsChecked = false;
+            controller.Dispose();
+            store = new StateStore(store.Root); controller = new DesktopController(store, watched, false);
+            Check(controller.TrayMenu.AutoTakeDown.IsChecked == false && !store.State.AutoTakeDown, "重启后保留关闭状态");
         }
 
         static async Task CheckMenuInputProbe()
@@ -2115,7 +2169,8 @@ namespace ScreenLine.Tests
             controller.ShowTrayMenu();
             await Until(() => controller.TrayMenu.IsOpen && controller.TrayMenu.ActualHeight > 0);
             var trayMenu = controller.TrayMenu;
-            Check(trayMenu.ActualHeight < 480 && trayMenu.ActualWidth <= 360, "托盘主面板紧凑显示，屏幕选择直接可见");
+            // 「第二天自动下绳」开关占一行后高约 508，上限相应放宽，仍留出余量。
+            Check(trayMenu.ActualHeight < 540 && trayMenu.ActualWidth <= 360, "托盘主面板紧凑显示，屏幕选择直接可见");
             Point topLeft = trayMenu.PointToScreen(new Point());
             Point bottomRight = trayMenu.PointToScreen(new Point(trayMenu.ActualWidth, trayMenu.ActualHeight));
             Check(topLeft.X >= screen.Bounds.Left && topLeft.Y >= screen.Bounds.Top
