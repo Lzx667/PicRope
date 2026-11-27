@@ -115,7 +115,7 @@ namespace ScreenLine
             TrayMenu.OnAction(TrayMenu.AppearanceButton, ShowAppearance);
             var more = TrayMenu.MoreMenu;
             // 两种悬停位置互斥：勾选哪一项就用哪一种，取消勾选当前项即关闭悬停展开。
-            cornerToggle = more.AddAction("鼠标移至左上角时展开", "show", delegate { SetRevealMode(cornerToggle.IsChecked, store.State.ToggleShortcut, false); });
+            cornerToggle = more.AddAction("鼠标移至左/右上角展开", "show", delegate { SetRevealMode(cornerToggle.IsChecked, store.State.ToggleShortcut, false); });
             cornerToggle.IsCheckable = true;
             topHoverToggle = more.AddAction("鼠标移至顶部时展开", "show", delegate { SetRevealMode(topHoverToggle.IsChecked, store.State.ToggleShortcut, true); });
             topHoverToggle.IsCheckable = true;

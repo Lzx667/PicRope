@@ -97,7 +97,7 @@ namespace ScreenLine.Tests
             string watched = Path.Combine(root, "WindowsScreenshots"); Directory.CreateDirectory(watched);
             var store = new StateStore(Path.Combine(root, "profile"));
             controller = new DesktopController(store, watched, false);
-            var corner = RevealItem(controller.TrayMenu.MoreMenu, "鼠标移至左上角时展开");
+            var corner = RevealItem(controller.TrayMenu.MoreMenu, "鼠标移至左/右上角展开");
             var topHover = RevealItem(controller.TrayMenu.MoreMenu, "鼠标移至顶部时展开");
             Check(corner.IsCheckable && corner.IsChecked && store.State.RevealOnTopHover && !store.State.HoverWholeEdge, "悬停展开默认左上角模式");
             Check(topHover.IsCheckable && !topHover.IsChecked, "整条顶边模式默认不勾选");
@@ -110,7 +110,7 @@ namespace ScreenLine.Tests
             controller.Dispose();
             store = new StateStore(store.Root); controller = new DesktopController(store, watched, false);
             var more = controller.TrayMenu.MoreMenu;
-            corner = RevealItem(more, "鼠标移至左上角时展开");
+            corner = RevealItem(more, "鼠标移至左/右上角展开");
             topHover = RevealItem(more, "鼠标移至顶部时展开");
             Check(!corner.IsChecked && !topHover.IsChecked && !store.State.RevealOnTopHover, "重启后菜单与配置保留关闭状态");
             topHover.IsChecked = true; topHover.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
@@ -142,7 +142,7 @@ namespace ScreenLine.Tests
             controller.Dispose();
             store = new StateStore(store.Root); controller = new DesktopController(store, watched, false);
             more = controller.TrayMenu.MoreMenu;
-            corner = RevealItem(more, "鼠标移至左上角时展开");
+            corner = RevealItem(more, "鼠标移至左/右上角展开");
             topHover = RevealItem(more, "鼠标移至顶部时展开");
             shortcutSwitch = RevealItem(more, "Ctrl+Alt+T 显示/收起");
             Check(topHover.IsChecked && !corner.IsChecked && store.State.HoverWholeEdge && !shortcutSwitch.IsChecked && controller.TrayMenu.Shortcut.Text == "", "重启后保留仅悬停模式及所选位置");
@@ -468,7 +468,7 @@ namespace ScreenLine.Tests
             await controller.Start();
             Check(controller.Gallery.Items.Count == 1 && controller.Gallery.Items[0].Path == retained, "重新启动可恢复挂着的图片");
             Check(controller.Captures.CollectClipboard, "重新启动可恢复剪贴板收集设置");
-            Check(!controller.Gallery.Store.State.RevealOnTopHover && !RevealItem(controller.TrayMenu.MoreMenu, "鼠标移至左上角时展开").IsChecked
+            Check(!controller.Gallery.Store.State.RevealOnTopHover && !RevealItem(controller.TrayMenu.MoreMenu, "鼠标移至左/右上角展开").IsChecked
                 && !RevealItem(controller.TrayMenu.MoreMenu, "鼠标移至顶部时展开").IsChecked,
                 "重新启动后保留悬停展开关闭状态，两个菜单项同步取消勾选");
             await Task.Delay(900);
@@ -1429,10 +1429,24 @@ namespace ScreenLine.Tests
                 controller.Gallery.Add(path, ImageContent.Read(path));
                 controller.TrayMenu.Pictures.IsChecked = true; controller.TrayMenu.Text.IsChecked = true;
                 backdrop.Show(); backdrop.Activate();
-                shelf.Reveal(true, true, 60); await Task.Delay(500);
-                WindowsNative.ActivateEditor(new System.Windows.Interop.WindowInteropHelper(backdrop).Handle);
                 var area = shelf.Display.WorkingArea;
                 double scale = WindowsNative.MonitorScale(shelf.Display);
+                // 右上角下方是最大化窗口的按钮：停留再久也不展开。
+                var cornerTip = new WindowsNative.Point { X = area.Right - 2, Y = area.Top + 1 };
+                Check(WindowsNative.OverWindowButton(new WindowsNative.Point { X = area.Right - (int)Math.Round(23 * scale), Y = area.Top + (int)Math.Round(16 * scale) }),
+                    "最大化窗口右上角的落点是窗口按钮");
+                SetCursorPos(cornerTip.X, cornerTip.Y);
+                shelf.SetRevealOnTopHover(true, false); shelf.Reveal(false, false, 0);
+                await Task.Delay(700);
+                Check(!shelf.Revealed && WindowsNative.OverCaptionButtons(shelf.Display, cornerTip, shelf.Handle), "最大化窗口的右上角停留不展开");
+                // 这时左上角照常可用。
+                var leftTip = new WindowsNative.Point { X = shelf.Display.Bounds.Left + 2, Y = shelf.Display.Bounds.Top + 1 };
+                SetCursorPos(leftTip.X, leftTip.Y); shelf.Reveal(false, false, 0);
+                await Until(() => shelf.Revealed, "最大化窗口前左上角停留");
+                Check(shelf.Revealed, "最大化窗口前左上角停留可展开");
+                shelf.SetRevealOnTopHover(false);
+                shelf.Reveal(true, true, 60); await Task.Delay(500);
+                WindowsNative.ActivateEditor(new System.Windows.Interop.WindowInteropHelper(backdrop).Handle);
                 var captionPoint = new Point(area.Right - (int)Math.Round(23 * scale), area.Top + (int)Math.Round(16 * scale));
                 bool captionMoved = SetCursorPos((int)captionPoint.X, (int)captionPoint.Y);
                 TraceInput("最大化窗口按钮", captionPoint, captionMoved, captionMoved ? 0 : Marshal.GetLastWin32Error());
@@ -1481,6 +1495,7 @@ namespace ScreenLine.Tests
                     var foregroundHandle = new System.Windows.Interop.WindowInteropHelper(foreground).Handle;
                     WindowsNative.SetWindowPos(foregroundHandle, IntPtr.Zero, area.Right - 400, area.Top, 400, 300, 0x14);
                     await Task.Delay(100);
+                    Check(WindowsNative.OverWindowButton(cornerTip), "贴着屏幕右上角的普通窗口，角落里是它自己的关闭按钮");
                     shelf.Reveal(true, true, 60);
                     Check(!WindowsNative.OverCaptionButtons(shelf.Display, corner, shelf.Handle), "普通窗口遮住屏幕右上角时不触发避让");
                     tick.Invoke(shelf, new object[] { null, EventArgs.Empty });
@@ -1500,6 +1515,22 @@ namespace ScreenLine.Tests
                 Check(!WindowsNative.OverCaptionButtons(shelf.Display, pointer, shelf.Handle), "普通窗口右上角不触发避让");
                 tick.Invoke(shelf, new object[] { null, EventArgs.Empty });
                 Check(shelf.Revealed, "普通窗口右上角不会收起图绳");
+                // 角落里没有窗口按钮时，右上角和左上角一样可以停留展开。用一块无边框的透明度 0 窗口盖住角落，
+                // 让结果不依赖测试时桌面上原本开着什么窗口。
+                var cover = new Window { Title = "右上角展开验证", WindowStyle = WindowStyle.None, ResizeMode = ResizeMode.NoResize, Width = 120, Height = 120,
+                    ShowInTaskbar = false, ShowActivated = false, Topmost = true, Opacity = 0, Background = Brushes.White };
+                try
+                {
+                    cover.Show();
+                    WindowsNative.SetWindowPos(new System.Windows.Interop.WindowInteropHelper(cover).Handle, IntPtr.Zero, area.Right - 120, area.Top, 120, 120, 0x14);
+                    await Task.Delay(200);
+                    Check(!WindowsNative.OverCaptionButtons(shelf.Display, cornerTip, shelf.Handle) && !WindowsNative.OverWindowButton(cornerTip), "盖住角落的窗口没有窗口按钮");
+                    shelf.SetRevealOnTopHover(true, false); shelf.Reveal(false, false, 0);
+                    SetCursorPos(cornerTip.X, cornerTip.Y);
+                    await Until(() => shelf.Revealed, "右上角停留");
+                    Check(shelf.Revealed, "角落里没有窗口按钮时右上角停留可展开");
+                }
+                finally { cover.Close(); shelf.SetRevealOnTopHover(false); }
             }
             finally { backdrop.Close(); shelf.SetRevealOnTopHover(previousTopHover); }
         }
@@ -2230,7 +2261,7 @@ namespace ScreenLine.Tests
             Check(trayMenu.IsOpen, "展开更多操作时主面板保持可见");
             var moreBounds = new Rect(more.PointToScreen(new Point()), more.PointToScreen(new Point(more.ActualWidth, more.ActualHeight)));
             Check(screen.Bounds.Contains((int)moreBounds.Left, (int)moreBounds.Top) && moreBounds.Right <= screen.Bounds.Right + 1 && moreBounds.Bottom <= screen.Bounds.Bottom + 1, "更多操作靠近屏幕边缘也完整显示");
-            var corner = RevealItem(more, "鼠标移至左上角时展开");
+            var corner = RevealItem(more, "鼠标移至左/右上角展开");
             var topHover = RevealItem(more, "鼠标移至顶部时展开");
             Check(corner.IsCheckable && corner.IsChecked && !topHover.IsChecked, "悬停展开菜单默认勾选左上角");
             await ClickMenu(corner);

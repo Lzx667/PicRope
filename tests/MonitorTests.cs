@@ -120,7 +120,10 @@ namespace ScreenLine.Tests
             int middle = bounds.Left + bounds.Width / 2;
             Check(ShelfWindow.CornerReach(screen) == reach && zone(bounds.Left, bounds.Top, false) && zone(bounds.Left + reach - 1, bottom, false)
                 && !zone(bounds.Left + reach, bounds.Top, false) && !zone(middle, bounds.Top, false) && !zone(bounds.Left, bottom + 1, false),
-                label + "左上角模式只认左上角一小段，宽度随缩放换算");
+                label + "角落模式只认左上角一小段，宽度随缩放换算");
+            Check(zone(bounds.Right - reach, bounds.Top, false) && zone(bounds.Right - 1, bottom, false)
+                && !zone(bounds.Right - reach - 1, bounds.Top, false) && !zone(bounds.Right, bounds.Top, false) && !zone(bounds.Right - 1, bottom + 1, false),
+                label + "角落模式也认右上角一小段");
             Check(zone(middle, bounds.Top, true) && !zone(middle, bottom + 1, true) && !zone(bounds.Left - 1, bounds.Top, true) && !zone(bounds.Right, bounds.Top, true),
                 label + "整条顶边模式认整条顶边，顶边以下和屏幕外不算");
             var leftBar = Screen("SIM-LEFTBAR", bounds, new System.Drawing.Rectangle(bounds.Left + 48, bounds.Top, bounds.Width - 48, bounds.Height - 40), false);
@@ -128,6 +131,12 @@ namespace ScreenLine.Tests
             Check(ShelfWindow.InHoverZone(leftBar, new WindowsNative.Point { X = bounds.Left + 47, Y = bounds.Top }, false)
                 && !ShelfWindow.InHoverZone(leftBar, new WindowsNative.Point { X = bounds.Left + 48, Y = bounds.Top }, false),
                 label + "左侧任务栏与顶部任务栏同样算作屏幕边缘");
+            var rightBar = Screen("SIM-RIGHTBAR", bounds, new System.Drawing.Rectangle(bounds.Left, bounds.Top, bounds.Width - 48, bounds.Height - 40), false);
+            Scales[rightBar.DeviceName] = scale;
+            Check(ShelfWindow.InHoverZone(rightBar, new WindowsNative.Point { X = bounds.Right - 1, Y = bounds.Top }, false)
+                && ShelfWindow.InHoverZone(rightBar, new WindowsNative.Point { X = bounds.Right - 48, Y = bounds.Top }, false)
+                && !ShelfWindow.InHoverZone(rightBar, new WindowsNative.Point { X = bounds.Right - 49, Y = bounds.Top }, false),
+                label + "右侧任务栏与顶部任务栏同样算作屏幕边缘");
         }
 
         static Gallery Open()
@@ -335,6 +344,10 @@ namespace ScreenLine.Tests
                 Check(!shelf.Revealed, label + "拖到左上角后松开，停留不展开");
                 Pointer.Y += 200; await Task.Delay(70); Pointer.Y = bounds.Top + 1;
                 Check(await Until(() => shelf.Revealed), label + "松开后离开再进入左上角恢复呼出");
+                Pointer.Y += 200; await Task.Delay(100);
+                shelf.Reveal(false, false, 0);
+                Pointer = new WindowsNative.Point { X = bounds.Right - 2, Y = bounds.Top + 1 };
+                Check(await Until(() => shelf.Revealed), label + "右上角停留可展开");
                 string path = Path.Combine(projectRoot, "docs", "assets", "rope-preview.png");
                 gallery.Add(path, ImageContent.Read(path));
                 var item = gallery.Items.Single();
@@ -388,6 +401,18 @@ namespace ScreenLine.Tests
                 shelf.Reveal(false, false, 0); shelf.SetRevealOnTopHover(true, false);
                 Pointer = Corner(main, false); Tick();
                 Check(!shelf.Revealed && (DateTime)edge.GetValue(shelf) != DateTime.MaxValue, "改回左上角后回到左上角才开始计时");
+                // 右上角：下方是窗口按钮时不触发，没有按钮时和左上角一样计时展开。
+                Pointer = new WindowsNative.Point { X = 1919, Y = 1 }; CaptionButtons = true; Tick();
+                edge.SetValue(shelf, DateTime.UtcNow.AddSeconds(-1)); Tick();
+                Check(!shelf.Revealed && (DateTime)edge.GetValue(shelf) == DateTime.MaxValue, "右上角下方是最大化窗口时不计时也不展开");
+                CaptionButtons = false; Tick();
+                edge.SetValue(shelf, DateTime.UtcNow.AddSeconds(-1)); Tick();
+                Check(shelf.Revealed, "右上角没有窗口按钮时停留可展开");
+                // 模拟环境的窗口按钮开关与指针位置无关，左上角不受影响改由桌面测试在真实系统上验证。
+                // 先离开角落再收起：展开不会清掉上面强行改过的计时起点，离开触发区才会清。
+                Pointer = Corner(main, false); Pointer.Y = 400; Tick();
+                shelf.Reveal(false, false, 0);
+                Pointer.Y = 1; Tick();
                 Pointer.Y = 400; MouseDown = true; Tick();
                 Pointer.Y = 1; Tick();
                 MouseDown = false; Tick();

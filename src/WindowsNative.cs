@@ -33,6 +33,8 @@ namespace ScreenLine
         delegate bool WindowEnumerator(IntPtr window, IntPtr parameter);
         [DllImport("user32.dll")] static extern bool EnumWindows(WindowEnumerator callback, IntPtr parameter);
         [DllImport("user32.dll")] static extern bool IsIconic(IntPtr window);
+        [DllImport("user32.dll")] static extern IntPtr WindowFromPoint(Point point);
+        [DllImport("user32.dll")] static extern IntPtr SendMessageTimeout(IntPtr window, int message, IntPtr w, IntPtr l, uint flags, uint timeout, out IntPtr result);
         [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr window, int attribute, out int value, int size);
         [DllImport("user32.dll")] static extern int GetWindowLong(IntPtr window, int index);
         [DllImport("user32.dll")] static extern int SetWindowLong(IntPtr window, int index, int value);
@@ -152,6 +154,17 @@ namespace ScreenLine
                 || rect.Right - rect.Left < 280 * scale || rect.Bottom - rect.Top < 80 * scale) return false;
             double right = Math.Min(rect.Right, bounds.Right), top = Math.Max(rect.Top, bounds.Top);
             return cursor.X >= right - 150 * scale && cursor.X < right && cursor.Y >= top && cursor.Y < top + 40 * scale;
+        }
+
+        // 落点是不是某个窗口自己的最小化、最大化或关闭按钮。右上角展开前先确认：贴着屏幕右上角的普通窗口，角落里往往就是它的关闭按钮。
+        public static bool OverWindowButton(Point cursor)
+        {
+            IntPtr window = WindowFromPoint(cursor), hit;
+            if (window == IntPtr.Zero) return false;
+            // 查不到或窗口无响应时按“是按钮”处理，宁可不展开。
+            if (SendMessageTimeout(window, 0x0084, IntPtr.Zero, (IntPtr)((cursor.Y << 16) | (cursor.X & 0xFFFF)), 2, 50, out hit) == IntPtr.Zero) return true;
+            int code = hit.ToInt32();
+            return code == 8 || code == 9 || code == 20;
         }
 
         public static bool FullScreen(Forms.Screen screen, IntPtr overlay)

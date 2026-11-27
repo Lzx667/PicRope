@@ -761,18 +761,31 @@ namespace ScreenLine
             return false;
         }
 
-        // 左上角触发区的宽度按逻辑像素计，随显示器缩放换算。
+        // 角落触发区的宽度按逻辑像素计，随显示器缩放换算。
         const double CornerWidth = 16;
         internal static int CornerReach(Forms.Screen screen) { return Math.Max(3, (int)Math.Round(CornerWidth * WindowsNative.MonitorScale(screen))); }
 
-        // 悬停展开的触发区：整条顶边，或只认左上角一小段。任务栏占用的顶边、左侧同样算作屏幕边缘。
+        // 顶边条带：顶部 3 个物理像素；任务栏在顶部时是整条任务栏。
+        static bool AtTopEdge(Forms.Screen screen, WindowsNative.Point cursor)
+        {
+            return cursor.X >= screen.Bounds.Left && cursor.X < screen.Bounds.Right
+                && cursor.Y >= screen.Bounds.Top && cursor.Y <= Math.Max(screen.Bounds.Top + 2, screen.WorkingArea.Top - 1);
+        }
+
+        internal static bool InLeftCorner(Forms.Screen screen, WindowsNative.Point cursor)
+        {
+            return AtTopEdge(screen, cursor) && cursor.X <= Math.Max(screen.Bounds.Left + CornerReach(screen) - 1, screen.WorkingArea.Left - 1);
+        }
+
+        internal static bool InRightCorner(Forms.Screen screen, WindowsNative.Point cursor)
+        {
+            return AtTopEdge(screen, cursor) && cursor.X >= Math.Min(screen.Bounds.Right - CornerReach(screen), screen.WorkingArea.Right);
+        }
+
+        // 悬停展开的触发区：整条顶边，或上方两角各一小段。任务栏占用的顶边、左右侧同样算作屏幕边缘。
         internal static bool InHoverZone(Forms.Screen screen, WindowsNative.Point cursor, bool wholeEdge)
         {
-            var bounds = screen.Bounds;
-            var work = screen.WorkingArea;
-            if (cursor.X < bounds.Left || cursor.X >= bounds.Right
-                || cursor.Y < bounds.Top || cursor.Y > Math.Max(bounds.Top + 2, work.Top - 1)) return false;
-            return wholeEdge || cursor.X <= Math.Max(bounds.Left + CornerReach(screen) - 1, work.Left - 1);
+            return wholeEdge ? AtTopEdge(screen, cursor) : InLeftCorner(screen, cursor) || InRightCorner(screen, cursor);
         }
 
         void Tick(object sender, EventArgs args)
@@ -781,8 +794,11 @@ namespace ScreenLine
             var cursor = WindowsNative.Cursor();
             var screen = SelectedDisplay();
             bool down = (WindowsNative.GetAsyncKeyState(1) & 0x8000) != 0;
-            bool atTop = InHoverZone(screen, cursor, true);
-            bool inZone = atTop && (gallery.Store.State.HoverWholeEdge || InHoverZone(screen, cursor, false));
+            bool atTop = AtTopEdge(screen, cursor);
+            // 右上角是窗口按钮的常驻位置：下方是最大化窗口，或落点就是窗口的最小化、最大化、关闭按钮时不触发，沿用窗口避让。
+            bool inZone = atTop && (gallery.Store.State.HoverWholeEdge
+                || (InHoverZone(screen, cursor, false) && !(InRightCorner(screen, cursor)
+                    && (WindowsNative.OverCaptionButtons(screen, cursor, Handle) || WindowsNative.OverWindowButton(cursor)))));
             var interval = TimeSpan.FromMilliseconds(Revealed || atTop ? 30 : 100);
             if (pointer.Interval != interval) pointer.Interval = interval;
             bool over = Revealed && OverControl(cursor);
