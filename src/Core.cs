@@ -21,9 +21,8 @@ namespace ScreenLine
         // 隔天下绳：新的一天开始后，之前上绳的图片自动取下到篮子。旧配置没有这一项，读取时保持默认开启。
         public bool AutoTakeDown { get; set; }
         public bool HoverPreview { get; set; }
+        public bool RevealOnTopPush { get; set; }
         public bool RevealOnTopHover { get; set; }
-        // 悬停展开的触发位置：false 只认屏幕左上角，true 为整条顶边。旧配置没有这一项，读取时保持默认的左上角。
-        public bool HoverWholeEdge { get; set; }
         public bool ToggleShortcut { get; set; }
         public string Theme { get; set; }
         public string DisplayDevice { get; set; }
@@ -38,7 +37,121 @@ namespace ScreenLine
         public Dictionary<string, DateTime> Hung { get; set; }
         public List<TextItem> Texts { get; set; }
 
-        public SavedState() { Images = new List<string>(); Collection = new List<string>(); Hung = new Dictionary<string, DateTime>(); Texts = new List<TextItem>(); Theme = "classic"; AutoHang = true; AutoTakeDown = true; HoverPreview = true; RevealOnTopHover = true; ToggleShortcut = true; CaptureModifiers = 3; CaptureKey = (uint)'S'; ToggleModifiers = 3; ToggleKey = (uint)'T'; }
+        public SavedState() { Images = new List<string>(); Collection = new List<string>(); Hung = new Dictionary<string, DateTime>(); Texts = new List<TextItem>(); Theme = "classic"; AutoHang = true; AutoTakeDown = true; HoverPreview = true; RevealOnTopPush = true; RevealOnTopHover = false; ToggleShortcut = true; CaptureModifiers = 3; CaptureKey = (uint)'S'; ToggleModifiers = 3; ToggleKey = (uint)'T'; }
+    }
+
+    internal sealed class TopPushDetector
+    {
+        public const int DefaultThreshold = 20;
+        public const int DefaultPauseMs = 45;
+        public const int DefaultDoubleWindowMs = 600;
+        public const int DefaultCooldownMs = 450;
+        readonly int threshold;
+        readonly TimeSpan pause;
+        readonly TimeSpan doubleWindow;
+        readonly TimeSpan cooldown;
+        bool awaitingGap;
+        int stroke;
+        int horizontal;
+        DateTime lastUp = DateTime.MinValue;
+        DateTime firstBumpAt = DateTime.MinValue;
+        DateTime cooldownUntil = DateTime.MinValue;
+
+        public TopPushDetector(int threshold = DefaultThreshold, int pauseMs = DefaultPauseMs, int doubleWindowMs = DefaultDoubleWindowMs, int cooldownMs = DefaultCooldownMs)
+        {
+            this.threshold = threshold;
+            pause = TimeSpan.FromMilliseconds(pauseMs);
+            doubleWindow = TimeSpan.FromMilliseconds(doubleWindowMs);
+            cooldown = TimeSpan.FromMilliseconds(cooldownMs);
+        }
+
+        public void Reset()
+        {
+            awaitingGap = false;
+            stroke = 0;
+            horizontal = 0;
+            lastUp = DateTime.MinValue;
+            firstBumpAt = DateTime.MinValue;
+        }
+
+        public bool Feed(bool atTop, bool nearTop, int dx, int dy, DateTime now)
+        {
+            if (!nearTop)
+            {
+                Reset();
+                return false;
+            }
+            if (now < cooldownUntil)
+            {
+                awaitingGap = false;
+                stroke = 0;
+                horizontal = 0;
+                firstBumpAt = DateTime.MinValue;
+                return false;
+            }
+            // 两下上推之间允许自然回拉离开顶边（仍在顶部区域内），直接视为分隔两下。
+            if (!atTop)
+            {
+                stroke = 0;
+                horizontal = 0;
+                if (firstBumpAt != DateTime.MinValue) awaitingGap = false;
+                return false;
+            }
+            if (firstBumpAt != DateTime.MinValue && now - firstBumpAt > doubleWindow)
+            {
+                firstBumpAt = DateTime.MinValue;
+                awaitingGap = false;
+            }
+            if (dy > 0)
+            {
+                stroke = 0;
+                horizontal = 0;
+                if (firstBumpAt != DateTime.MinValue) awaitingGap = false;
+                return false;
+            }
+            if (dy < 0)
+            {
+                if (lastUp != DateTime.MinValue && now - lastUp >= pause)
+                {
+                    stroke = 0;
+                    horizontal = 0;
+                    if (firstBumpAt != DateTime.MinValue) awaitingGap = false;
+                }
+                lastUp = now;
+                // 第一下的连续惯性包全部忽略，直到出现停顿或回拉才开始计第二下。
+                if (awaitingGap)
+                {
+                    firstBumpAt = now;
+                    return false;
+                }
+                stroke += -dy;
+                horizontal += Math.Abs(dx);
+                if (stroke >= threshold && stroke >= horizontal * 0.65)
+                {
+                    if (firstBumpAt == DateTime.MinValue)
+                    {
+                        firstBumpAt = now;
+                        awaitingGap = true;
+                        stroke = 0;
+                        horizontal = 0;
+                        return false;
+                    }
+                    Reset();
+                    cooldownUntil = now + cooldown;
+                    return true;
+                }
+            }
+            else if (dx != 0 && stroke > 0)
+            {
+                horizontal += Math.Abs(dx);
+                if (horizontal > threshold * 3)
+                {
+                    stroke = 0;
+                    horizontal = 0;
+                }
+            }
+            return false;
+        }
     }
 
     internal static class ShortcutRules
@@ -68,7 +181,19 @@ namespace ScreenLine
             if (!File.Exists(file)) return;
             try
             {
-                State = serializer.Deserialize<SavedState>(File.ReadAllText(file, Encoding.UTF8)) ?? new SavedState();
+                string raw = File.ReadAllText(file, Encoding.UTF8);
+                State = serializer.Deserialize<SavedState>(raw) ?? new SavedState();
+                // 旧版配置文件没有 RevealOnTopPush 字段，保持其原有的悬停/快捷键展开方式。
+                if (raw.IndexOf("\"RevealOnTopPush\"", StringComparison.OrdinalIgnoreCase) < 0)
+                {
+                    State.RevealOnTopPush = false;
+                    if (raw.IndexOf("\"RevealOnTopHover\"", StringComparison.OrdinalIgnoreCase) < 0)
+                        State.RevealOnTopHover = true;
+                }
+                else if (State.RevealOnTopPush && State.RevealOnTopHover)
+                {
+                    State.RevealOnTopHover = false;
+                }
                 if (State.Images == null) State.Images = new List<string>();
                 if (State.Collection == null) State.Collection = new List<string>();
                 if (State.Hung == null) State.Hung = new Dictionary<string, DateTime>();

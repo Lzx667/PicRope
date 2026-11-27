@@ -70,16 +70,18 @@ namespace ScreenLine
         bool closing;
         readonly DispatcherTimer pointer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(30) };
         readonly DispatcherTimer scrollHover = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(120) };
+        readonly TopPushDetector topPush = new TopPushDetector();
         DateTime edgeSince = DateTime.MaxValue, awaySince = DateTime.MaxValue, peekUntil;
         DateTime nextGust;
         double lastFrame, hideTime, hideFrom, drawnWidth = -1, drawnSag = -1;
         double lastScrollOffset;
         bool rendering;
-        bool pinned, previousDown, suppressEdge, trackingScrollHover, avoidingCaption, switchingDisplay, displayMoveQueued;
+        bool pinned, previousDown, previousRightDown, suppressEdge, trackingScrollHover, avoidingCaption, switchingDisplay, displayMoveQueued;
         int displaySwitchVersion;
         string viewingName;
         IntPtr viewingWindow;
         DateTime viewerSearchUntil;
+        public DateTime LastOutsideHide { get; private set; }
         public bool Revealed { get; private set; }
         public IntPtr Handle { get; private set; }
         public Forms.Screen Display { get; private set; }
@@ -311,18 +313,43 @@ namespace ScreenLine
             Reveal(true, true, 0);
         }
 
-        internal void SetRevealOnTopHover(bool enabled) { SetRevealOnTopHover(enabled, gallery.Store.State.HoverWholeEdge); }
+        internal void SetRevealOnTopHover(bool enabled) { SetMouseReveal(false, enabled); }
 
-        internal void SetRevealOnTopHover(bool enabled, bool wholeEdge)
+        internal void SetMouseReveal(bool push, bool hover)
         {
             var state = gallery.Store.State;
-            bool previous = state.RevealOnTopHover, previousEdge = state.HoverWholeEdge;
-            state.RevealOnTopHover = enabled; state.HoverWholeEdge = wholeEdge;
+            bool previousPush = state.RevealOnTopPush, previousHover = state.RevealOnTopHover;
+            state.RevealOnTopPush = push; state.RevealOnTopHover = hover;
             try { gallery.Store.Save(); }
-            catch { state.RevealOnTopHover = previous; state.HoverWholeEdge = previousEdge; throw; }
+            catch { state.RevealOnTopPush = previousPush; state.RevealOnTopHover = previousHover; throw; }
             edgeSince = DateTime.MaxValue;
-            // 跨屏收起也是顶部悬停发起的，关闭时取消尚未完成的自动展开。
-            if (!enabled) CancelDisplaySwitch();
+            topPush.Reset();
+            // 跨屏收起也是鼠标顶边触发发起的，关闭时取消尚未完成的自动展开。
+            if (!push && !hover) CancelDisplaySwitch();
+        }
+
+        internal void OnRawMouseMoved(int dx, int dy)
+        {
+            if (closing || Capturing || !gallery.Store.State.RevealOnTopPush) return;
+            bool down = (WindowsNative.GetAsyncKeyState(1) & 0x8000) != 0 || (WindowsNative.GetAsyncKeyState(2) & 0x8000) != 0;
+            if (down) { topPush.Reset(); return; }
+            var cursor = WindowsNative.Cursor();
+            var screen = SelectedDisplay();
+            bool inX = cursor.X >= screen.Bounds.Left && cursor.X < screen.Bounds.Right;
+            bool atTop = inX && cursor.Y >= screen.Bounds.Top && cursor.Y <= screen.Bounds.Top + 1;
+            int nearReach = Math.Max(180, (int)Math.Round(240 * WindowsNative.MonitorScale(screen)));
+            bool nearTop = inX && cursor.Y >= screen.Bounds.Top && cursor.Y <= screen.Bounds.Top + nearReach;
+            if (!topPush.Feed(atTop, nearTop, dx, dy, DateTime.UtcNow)) return;
+            if (WindowsNative.FullScreen(screen, Handle) || WindowsNative.OverCaptionButtons(screen, cursor, Handle)) return;
+            if (Revealed && Display != null && screen.DeviceName == Display.DeviceName) return;
+            if (Revealed && Display != null && screen.DeviceName != Display.DeviceName)
+            {
+                Reveal(false, false, 0);
+                switchingDisplay = true;
+                return;
+            }
+            MoveToDisplay();
+            Reveal(true, false, 0);
         }
 
         public void Update()
@@ -761,44 +788,23 @@ namespace ScreenLine
             return false;
         }
 
-        // 角落触发区的宽度按逻辑像素计，随显示器缩放换算。
-        const double CornerWidth = 16;
-        internal static int CornerReach(Forms.Screen screen) { return Math.Max(3, (int)Math.Round(CornerWidth * WindowsNative.MonitorScale(screen))); }
-
         // 顶边条带：顶部 3 个物理像素；任务栏在顶部时是整条任务栏。
-        static bool AtTopEdge(Forms.Screen screen, WindowsNative.Point cursor)
+        internal static bool AtTopEdge(Forms.Screen screen, WindowsNative.Point cursor)
         {
             return cursor.X >= screen.Bounds.Left && cursor.X < screen.Bounds.Right
                 && cursor.Y >= screen.Bounds.Top && cursor.Y <= Math.Max(screen.Bounds.Top + 2, screen.WorkingArea.Top - 1);
         }
 
-        internal static bool InLeftCorner(Forms.Screen screen, WindowsNative.Point cursor)
-        {
-            return AtTopEdge(screen, cursor) && cursor.X <= Math.Max(screen.Bounds.Left + CornerReach(screen) - 1, screen.WorkingArea.Left - 1);
-        }
-
-        internal static bool InRightCorner(Forms.Screen screen, WindowsNative.Point cursor)
-        {
-            return AtTopEdge(screen, cursor) && cursor.X >= Math.Min(screen.Bounds.Right - CornerReach(screen), screen.WorkingArea.Right);
-        }
-
-        // 悬停展开的触发区：整条顶边，或上方两角各一小段。任务栏占用的顶边、左右侧同样算作屏幕边缘。
-        internal static bool InHoverZone(Forms.Screen screen, WindowsNative.Point cursor, bool wholeEdge)
-        {
-            return wholeEdge ? AtTopEdge(screen, cursor) : InLeftCorner(screen, cursor) || InRightCorner(screen, cursor);
-        }
-
         void Tick(object sender, EventArgs args)
         {
-            if (Capturing) { CancelDisplaySwitch(); edgeSince = DateTime.MaxValue; return; }
+            if (Capturing) { CancelDisplaySwitch(); edgeSince = DateTime.MaxValue; topPush.Reset(); return; }
             var cursor = WindowsNative.Cursor();
             var screen = SelectedDisplay();
             bool down = (WindowsNative.GetAsyncKeyState(1) & 0x8000) != 0;
+            bool rightDown = (WindowsNative.GetAsyncKeyState(2) & 0x8000) != 0;
+            bool clicked = (down && !previousDown) || (rightDown && !previousRightDown);
             bool atTop = AtTopEdge(screen, cursor);
-            // 右上角是窗口按钮的常驻位置：下方是最大化窗口，或落点就是窗口的最小化、最大化、关闭按钮时不触发，沿用窗口避让。
-            bool inZone = atTop && (gallery.Store.State.HoverWholeEdge
-                || (InHoverZone(screen, cursor, false) && !(InRightCorner(screen, cursor)
-                    && (WindowsNative.OverCaptionButtons(screen, cursor, Handle) || WindowsNative.OverWindowButton(cursor)))));
+            bool inZone = atTop;
             var interval = TimeSpan.FromMilliseconds(Revealed || atTop ? 30 : 100);
             if (pointer.Interval != interval) pointer.Interval = interval;
             bool over = Revealed && OverControl(cursor);
@@ -817,6 +823,7 @@ namespace ScreenLine
                 Reveal(false, false, 0);
             }
             previousDown = down;
+            previousRightDown = rightDown;
             if (switchingDisplay)
             {
                 if (hideTime >= 0.22 && !displayMoveQueued)
@@ -888,6 +895,12 @@ namespace ScreenLine
             WindowsNative.Rectangle bounds;
             WindowsNative.GetWindowRect(Handle, out bounds);
             bool inside = cursor.X >= bounds.Left && cursor.X < bounds.Right && cursor.Y >= Display.Bounds.Top && cursor.Y < bounds.Bottom;
+            if (!inside && clicked && !busy && !viewing && !ChoosingAppearance && !ChoosingBasket && !ChoosingTexts)
+            {
+                LastOutsideHide = now;
+                Reveal(false, false, 0);
+                return;
+            }
             if (inside) pinned = false;
             if (inside || pinned || busy || viewing || ChoosingAppearance || ChoosingBasket || ChoosingTexts || now < peekUntil) awaySince = DateTime.MaxValue;
             else

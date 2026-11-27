@@ -10,6 +10,12 @@ namespace ScreenLine
     {
         public const int ShowMessage = 0x8001;
         public const int ExitMessage = 0x8002;
+        public const int WmInput = 0x00FF;
+        const uint RidInput = 0x10000003;
+        const uint RimTypeMouse = 0;
+        const ushort MouseMoveAbsolute = 0x01;
+        const uint RidevRemove = 0x00000001;
+        const uint RidevInputSink = 0x00000100;
         public const string MessageWindow = "ScreenLine.Windows.Messages";
         public static readonly IntPtr MessageParent = new IntPtr(-3);
 
@@ -17,6 +23,22 @@ namespace ScreenLine
         public struct Point { public int X, Y; }
         [StructLayout(LayoutKind.Sequential)]
         public struct Rectangle { public int Left, Top, Right, Bottom; }
+        [StructLayout(LayoutKind.Sequential)]
+        struct RawInputDevice { public ushort UsagePage, Usage; public uint Flags; public IntPtr Target; }
+        [StructLayout(LayoutKind.Sequential)]
+        struct RawInputHeader { public uint Type, Size; public IntPtr Device, WParam; }
+        [StructLayout(LayoutKind.Explicit)]
+        struct RawMouse
+        {
+            [FieldOffset(0)] public ushort Flags;
+            [FieldOffset(4)] public uint Buttons;
+            [FieldOffset(8)] public uint RawButtons;
+            [FieldOffset(12)] public int LastX;
+            [FieldOffset(16)] public int LastY;
+            [FieldOffset(20)] public uint ExtraInformation;
+        }
+        [StructLayout(LayoutKind.Sequential)]
+        struct RawInput { public RawInputHeader Header; public RawMouse Mouse; }
 
         [DllImport("user32.dll")] public static extern bool GetCursorPos(out Point point);
         [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int key);
@@ -56,6 +78,33 @@ namespace ScreenLine
         [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
         [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, IntPtr process);
         [DllImport("user32.dll")] static extern bool AttachThreadInput(uint thread, uint target, bool attach);
+        [DllImport("user32.dll", SetLastError = true)] static extern bool RegisterRawInputDevices(RawInputDevice[] devices, uint count, uint size);
+        [DllImport("user32.dll")] static extern uint GetRawInputData(IntPtr rawInput, uint command, out RawInput data, ref uint size, uint headerSize);
+
+        public static bool SetRawMouseInput(IntPtr window, bool enabled)
+        {
+            var device = new RawInputDevice
+            {
+                UsagePage = 0x01,
+                Usage = 0x02,
+                Flags = enabled ? RidevInputSink : RidevRemove,
+                Target = enabled ? window : IntPtr.Zero
+            };
+            return RegisterRawInputDevices(new[] { device }, 1, (uint)Marshal.SizeOf(typeof(RawInputDevice)));
+        }
+
+        public static bool ReadRawMouseDelta(IntPtr rawInput, out int dx, out int dy)
+        {
+            dx = 0; dy = 0;
+            RawInput data;
+            uint size = (uint)Marshal.SizeOf(typeof(RawInput));
+            uint result = GetRawInputData(rawInput, RidInput, out data, ref size, (uint)Marshal.SizeOf(typeof(RawInputHeader)));
+            if (result == uint.MaxValue || result == 0 || data.Header.Type != RimTypeMouse) return false;
+            if ((data.Mouse.Flags & MouseMoveAbsolute) != 0) return false;
+            dx = data.Mouse.LastX;
+            dy = data.Mouse.LastY;
+            return dx != 0 || dy != 0;
+        }
 
         public static void ActivateEditor(IntPtr window)
         {
@@ -212,12 +261,20 @@ namespace ScreenLine
         uint toggleModifiers, toggleKey, captureModifiers, captureKey, clearModifiers, clearKey;
         int toggleId = 1, captureId = 3;
         const int ClearId = 5;
+        bool rawMouseRegistered;
         bool disposed;
         public event Action ClipboardChanged;
         public event Action ToggleRequested;
         public event Action ExitRequested;
         public event Action CaptureRequested;
         public event Action ClearRequested;
+        public event Action<int, int> RawMouseMoved;
+
+        public void SetRawMouseInput(bool enabled)
+        {
+            if (disposed || rawMouseRegistered == enabled) return;
+            if (WindowsNative.SetRawMouseInput(source.Handle, enabled)) rawMouseRegistered = enabled;
+        }
 
         public void UnregisterToggle()
         {
@@ -275,6 +332,12 @@ namespace ScreenLine
 
         IntPtr Receive(IntPtr window, int message, IntPtr w, IntPtr l, ref bool handled)
         {
+            if (message == WindowsNative.WmInput && RawMouseMoved != null)
+            {
+                int dx, dy;
+                if (WindowsNative.ReadRawMouseDelta(l, out dx, out dy)) RawMouseMoved(dx, dy);
+                return IntPtr.Zero;
+            }
             if (message == 0x031D && ClipboardChanged != null) ClipboardChanged();
             if ((message == WindowsNative.ShowMessage || message == 0x0312 && ShortcutAvailable && w.ToInt32() == toggleId && Matches(l, toggleModifiers, toggleKey)) && ToggleRequested != null) ToggleRequested();
             if (message == 0x0312 && CaptureShortcutAvailable && w.ToInt32() == captureId && Matches(l, captureModifiers, captureKey) && CaptureRequested != null) CaptureRequested();
@@ -293,6 +356,7 @@ namespace ScreenLine
         {
             if (disposed) return;
             disposed = true;
+            if (rawMouseRegistered) { WindowsNative.SetRawMouseInput(source.Handle, false); rawMouseRegistered = false; }
             WindowsNative.RemoveClipboardFormatListener(source.Handle);
             if (ShortcutAvailable) WindowsNative.UnregisterHotKey(source.Handle, toggleId);
             if (CaptureShortcutAvailable) WindowsNative.UnregisterHotKey(source.Handle, captureId);

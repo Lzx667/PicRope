@@ -341,27 +341,54 @@ namespace ScreenLine.Tests
                     && store.State.Hung.Single().Value == old && new StateStore(store.Root).State.Images.Count == 1);
                 Check(gallery.TakeDownBefore(RopeDay.Start(DateTime.Now), null) == 1 && changes == 1 && gallery.Items.Count == 0 && gallery.Collected.Count == 1);
             });
-            Run("顶部悬停展开默认开启，关闭和重新开启后可恢复", delegate
+            Run("顶边上推展开默认开启，旧配置兼容保留原有悬停设置", delegate
             {
                 var store = new StateStore(Path.Combine(root, "top-hover-profile"));
-                Check(store.State.RevealOnTopHover);
+                Check(store.State.RevealOnTopPush && !store.State.RevealOnTopHover);
+                store.State.RevealOnTopPush = false; store.State.RevealOnTopHover = true; store.Save();
+                var restored = new StateStore(store.Root);
+                Check(!restored.State.RevealOnTopPush && restored.State.RevealOnTopHover);
                 store.State.RevealOnTopHover = false; store.Save();
-                Check(!new StateStore(store.Root).State.RevealOnTopHover);
-                store.State.RevealOnTopHover = true; store.Save();
-                Check(new StateStore(store.Root).State.RevealOnTopHover);
+                Check(!new StateStore(store.Root).State.RevealOnTopHover && !new StateStore(store.Root).State.RevealOnTopPush);
                 File.WriteAllText(Path.Combine(store.Root, "state.json"), "{\"Images\":[\"旧截图.png\"],\"HoverPreview\":false}");
                 var legacy = new StateStore(store.Root);
-                Check(legacy.State.RevealOnTopHover && !legacy.State.HoverPreview && legacy.State.Images.Single() == "旧截图.png");
+                Check(!legacy.State.RevealOnTopPush && legacy.State.RevealOnTopHover && !legacy.State.HoverPreview && legacy.State.Images.Single() == "旧截图.png");
             });
-            Run("悬停位置默认左上角，整条顶边可保存恢复，旧配置升级后仍是左上角", delegate
+            Run("顶边连推两下检测：单次甩边惯性不触发，停顿或轻微回拉后再上推立即触发并冷却", delegate
+            {
+                var detector = new TopPushDetector();
+                var t = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+                // 单次快速甩向顶边（连续多包惯性过冲）绝不触发
+                Check(!detector.Feed(true, true, 0, -120, t));
+                Check(!detector.Feed(true, true, 0, -60, t.AddMilliseconds(10)));
+                Check(!detector.Feed(true, true, 0, -80, t.AddMilliseconds(20)));
+                Check(!detector.Feed(true, true, 0, -80, t.AddMilliseconds(30)));
+                // 停顿 >= 45ms 后进行第二下上推，立即触发
+                Check(!detector.Feed(true, true, 0, -10, t.AddMilliseconds(90)));
+                Check(detector.Feed(true, true, 2, -12, t.AddMilliseconds(105)));
+                // 冷却期内连推两下也不重复触发
+                Check(!detector.Feed(true, true, 0, -60, t.AddMilliseconds(200)));
+                Check(!detector.Feed(true, true, 0, -60, t.AddMilliseconds(280)));
+                // 冷却期后：第一下上推 + 回拉离开顶边但仍在顶部区域 + 第二下上推，触发
+                Check(!detector.Feed(true, true, 0, -25, t.AddMilliseconds(600)));
+                Check(!detector.Feed(false, true, 0, 120, t.AddMilliseconds(640)));
+                Check(detector.Feed(true, true, 0, -25, t.AddMilliseconds(700)));
+                // 离开顶部区域后完全重置
+                Check(!detector.Feed(false, false, 0, 300, t.AddMilliseconds(1200)));
+                // 横向主导滑动不触发
+                Check(!detector.Feed(true, true, 80, -25, t.AddMilliseconds(1250)));
+                Check(!detector.Feed(true, true, 80, -25, t.AddMilliseconds(1330)));
+                // 两下间隔超过双推时间窗（600ms）后不会拼成一次触发
+                Check(!detector.Feed(true, true, 0, -40, t.AddMilliseconds(1500)));
+                Check(!detector.Feed(true, true, 0, -40, t.AddMilliseconds(2200)));
+            });
+            Run("旧配置含 HoverWholeEdge 字段仍可兼容读取，不报错且保留悬停设置", delegate
             {
                 var store = new StateStore(Path.Combine(root, "hover-zone-profile"));
-                Check(!store.State.HoverWholeEdge);
-                store.State.HoverWholeEdge = true; store.Save();
-                Check(new StateStore(store.Root).State.HoverWholeEdge);
-                File.WriteAllText(Path.Combine(store.Root, "state.json"), "{\"Images\":[\"旧截图.png\"],\"RevealOnTopHover\":true}");
+                Directory.CreateDirectory(store.Root);
+                File.WriteAllText(Path.Combine(store.Root, "state.json"), "{\"Images\":[\"旧截图.png\"],\"RevealOnTopHover\":true,\"HoverWholeEdge\":false}");
                 var legacy = new StateStore(store.Root);
-                Check(!legacy.State.HoverWholeEdge && legacy.State.RevealOnTopHover && legacy.State.Images.Single() == "旧截图.png");
+                Check(!legacy.State.RevealOnTopPush && legacy.State.RevealOnTopHover && legacy.State.Images.Single() == "旧截图.png");
             });
             Run("显隐快捷键开关默认开启，旧配置兼容，可保存恢复", delegate
             {

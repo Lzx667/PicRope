@@ -175,7 +175,7 @@ namespace ScreenLine
             toggle.Checked += handler; toggle.Unchecked += handler;
         }
 
-        internal void SetScreens(Forms.Screen[] screens, string selected, Action<string> choose, bool wholeEdge = false)
+        internal void SetScreens(Forms.Screen[] screens, string selected, Action<string> choose, bool topPush = false)
         {
             int index = Array.FindIndex(screens, screen => screen.DeviceName == selected);
             ScreenMode.Text = string.IsNullOrEmpty(selected) ? "跟随鼠标" : index < 0 ? "主屏（原屏幕未连接）" : "屏幕 " + (index + 1);
@@ -192,8 +192,8 @@ namespace ScreenLine
                 option.IsCheckable = true; option.IsChecked = screen.DeviceName == selected;
                 option.InputGestureText = screen.Bounds.Width + " × " + screen.Bounds.Height;
             }
-            ScreenMenu.Footer("跟随鼠标：移到任意屏幕" + (wholeEdge ? "顶部" : "左/右上角") + "展开\n固定屏幕：始终在所选屏幕显示"
-                + (wholeEdge ? "" : "\n右上角下方是窗口按钮时不展开"));
+            string followHint = topPush ? "顶部连推两下" : "顶部悬停";
+            ScreenMenu.Footer("跟随鼠标：移到任意屏幕" + followHint + "展开\n固定屏幕：始终在所选屏幕显示");
             if (!string.IsNullOrEmpty(selected) && index < 0) ScreenMenu.Footer("原屏幕未连接，暂用主屏；重连后恢复");
         }
 

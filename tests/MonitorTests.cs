@@ -111,32 +111,15 @@ namespace ScreenLine.Tests
         static void CheckHoverZone(Forms.Screen screen, double scale, string label)
         {
             var bounds = screen.Bounds;
-            int reach = (int)Math.Round(16 * scale);
             int bottom = Math.Max(bounds.Top + 2, screen.WorkingArea.Top - 1);
-            Func<int, int, bool, bool> zone = delegate(int x, int y, bool wholeEdge)
+            Func<int, int, bool> zone = delegate(int x, int y)
             {
-                return ShelfWindow.InHoverZone(screen, new WindowsNative.Point { X = x, Y = y }, wholeEdge);
+                return ShelfWindow.AtTopEdge(screen, new WindowsNative.Point { X = x, Y = y });
             };
             int middle = bounds.Left + bounds.Width / 2;
-            Check(ShelfWindow.CornerReach(screen) == reach && zone(bounds.Left, bounds.Top, false) && zone(bounds.Left + reach - 1, bottom, false)
-                && !zone(bounds.Left + reach, bounds.Top, false) && !zone(middle, bounds.Top, false) && !zone(bounds.Left, bottom + 1, false),
-                label + "角落模式只认左上角一小段，宽度随缩放换算");
-            Check(zone(bounds.Right - reach, bounds.Top, false) && zone(bounds.Right - 1, bottom, false)
-                && !zone(bounds.Right - reach - 1, bounds.Top, false) && !zone(bounds.Right, bounds.Top, false) && !zone(bounds.Right - 1, bottom + 1, false),
-                label + "角落模式也认右上角一小段");
-            Check(zone(middle, bounds.Top, true) && !zone(middle, bottom + 1, true) && !zone(bounds.Left - 1, bounds.Top, true) && !zone(bounds.Right, bounds.Top, true),
+            Check(zone(bounds.Left, bounds.Top) && zone(middle, bounds.Top) && zone(bounds.Right - 1, bottom)
+                && !zone(middle, bottom + 1) && !zone(bounds.Left - 1, bounds.Top) && !zone(bounds.Right, bounds.Top),
                 label + "整条顶边模式认整条顶边，顶边以下和屏幕外不算");
-            var leftBar = Screen("SIM-LEFTBAR", bounds, new System.Drawing.Rectangle(bounds.Left + 48, bounds.Top, bounds.Width - 48, bounds.Height - 40), false);
-            Scales[leftBar.DeviceName] = scale;
-            Check(ShelfWindow.InHoverZone(leftBar, new WindowsNative.Point { X = bounds.Left + 47, Y = bounds.Top }, false)
-                && !ShelfWindow.InHoverZone(leftBar, new WindowsNative.Point { X = bounds.Left + 48, Y = bounds.Top }, false),
-                label + "左侧任务栏与顶部任务栏同样算作屏幕边缘");
-            var rightBar = Screen("SIM-RIGHTBAR", bounds, new System.Drawing.Rectangle(bounds.Left, bounds.Top, bounds.Width - 48, bounds.Height - 40), false);
-            Scales[rightBar.DeviceName] = scale;
-            Check(ShelfWindow.InHoverZone(rightBar, new WindowsNative.Point { X = bounds.Right - 1, Y = bounds.Top }, false)
-                && ShelfWindow.InHoverZone(rightBar, new WindowsNative.Point { X = bounds.Right - 48, Y = bounds.Top }, false)
-                && !ShelfWindow.InHoverZone(rightBar, new WindowsNative.Point { X = bounds.Right - 49, Y = bounds.Top }, false),
-                label + "右侧任务栏与顶部任务栏同样算作屏幕边缘");
         }
 
         static Gallery Open()
@@ -394,14 +377,10 @@ namespace ScreenLine.Tests
                 Check(!shelf.Revealed && (DateTime)edge.GetValue(shelf) == DateTime.MaxValue, "按住鼠标拖过顶部和松手不会触发展开");
                 Pointer.Y = 400; Tick();
                 Pointer = new WindowsNative.Point { X = 700, Y = 1 }; Tick();
-                Check(!shelf.Revealed && (DateTime)edge.GetValue(shelf) == DateTime.MaxValue, "左上角模式下顶部正中间停留不计时也不展开");
-                shelf.SetRevealOnTopHover(true, true); Tick();
                 edge.SetValue(shelf, DateTime.UtcNow.AddSeconds(-1)); Tick();
-                Check(shelf.Revealed, "改选整条顶边后顶部正中间停留可展开");
-                shelf.Reveal(false, false, 0); shelf.SetRevealOnTopHover(true, false);
-                Pointer = Corner(main, false); Tick();
-                Check(!shelf.Revealed && (DateTime)edge.GetValue(shelf) != DateTime.MaxValue, "改回左上角后回到左上角才开始计时");
-                // 右上角：下方是窗口按钮时不触发，没有按钮时和左上角一样计时展开。
+                Check(shelf.Revealed, "顶部悬停模式下顶部正中间停留可展开");
+                shelf.Reveal(false, false, 0);
+                // 右上角：下方是最大化窗口按钮时不触发，没有按钮时停留可展开。
                 Pointer = new WindowsNative.Point { X = 1919, Y = 1 }; CaptionButtons = true; Tick();
                 edge.SetValue(shelf, DateTime.UtcNow.AddSeconds(-1)); Tick();
                 Check(!shelf.Revealed && (DateTime)edge.GetValue(shelf) == DateTime.MaxValue, "右上角下方是最大化窗口时不计时也不展开");

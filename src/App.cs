@@ -47,7 +47,7 @@ namespace ScreenLine
         internal CaptureWindow Capture { get; private set; }
         internal ShortcutWindow ShortcutSettings { get; private set; }
         readonly MenuItem captureMenu;
-        readonly MenuItem cornerToggle, topHoverToggle, shortcutToggle;
+        readonly MenuItem topPushToggle, topHoverToggle, shortcutToggle;
         internal readonly List<ImageEditorWindow> Editors = new List<ImageEditorWindow>();
         readonly AppUpdates updates = new AppUpdates();
         readonly CancellationTokenSource updateLifetime = new CancellationTokenSource();
@@ -78,6 +78,8 @@ namespace ScreenLine
             events.CaptureRequested += ShowCapture;
             events.ClearRequested += ClearRope;
             events.ToggleRequested += Shelf.Toggle;
+            events.RawMouseMoved += Shelf.OnRawMouseMoved;
+            events.SetRawMouseInput(store.State.RevealOnTopPush);
             events.ExitRequested += Exit;
             events.ClipboardChanged += Captures.ClipboardChanged;
             textClipboardSequence = WindowsNative.GetClipboardSequenceNumber();
@@ -114,12 +116,12 @@ namespace ScreenLine
             });
             TrayMenu.OnAction(TrayMenu.AppearanceButton, ShowAppearance);
             var more = TrayMenu.MoreMenu;
-            // 两种悬停位置互斥：勾选哪一项就用哪一种，取消勾选当前项即关闭悬停展开。
-            cornerToggle = more.AddAction("鼠标移至左/右上角展开", "show", delegate { SetRevealMode(cornerToggle.IsChecked, store.State.ToggleShortcut, false); });
-            cornerToggle.IsCheckable = true;
-            topHoverToggle = more.AddAction("鼠标移至顶部时展开", "show", delegate { SetRevealMode(topHoverToggle.IsChecked, store.State.ToggleShortcut, true); });
+            // 两种鼠标展开方式互斥：勾选哪一项就用哪一种，取消勾选当前项即关闭鼠标展开。
+            topPushToggle = more.AddAction("鼠标顶边连推两下展开", "show", delegate { SetRevealMode(topPushToggle.IsChecked, false, store.State.ToggleShortcut); });
+            topPushToggle.IsCheckable = true;
+            topHoverToggle = more.AddAction("鼠标移至顶部悬停展开", "show", delegate { SetRevealMode(false, topHoverToggle.IsChecked, store.State.ToggleShortcut); });
             topHoverToggle.IsCheckable = true;
-            shortcutToggle = more.AddAction("Ctrl+Alt+T 显示/收起", "shortcut", delegate { SetRevealMode(store.State.RevealOnTopHover, shortcutToggle.IsChecked, store.State.HoverWholeEdge); });
+            shortcutToggle = more.AddAction("Ctrl+Alt+T 显示/收起", "shortcut", delegate { SetRevealMode(store.State.RevealOnTopPush, store.State.RevealOnTopHover, shortcutToggle.IsChecked); });
             shortcutToggle.IsCheckable = true;
             SyncRevealMenu();
             MenuItem previewToggle = null;
@@ -172,7 +174,11 @@ namespace ScreenLine
             tray.BalloonTipClicked += delegate { ShowUpdate(); };
             TrayMenu.OnAction(TrayMenu.ExitButton, Exit);
             tray.MouseUp += delegate(object sender, Forms.MouseEventArgs args) { if (args.Button == Forms.MouseButtons.Right) ShowTrayMenu(); };
-            tray.MouseClick += delegate(object sender, Forms.MouseEventArgs args) { if (args.Button == Forms.MouseButtons.Left) Shelf.Toggle(); };
+            tray.MouseClick += delegate(object sender, Forms.MouseEventArgs args)
+            {
+                if (args.Button == Forms.MouseButtons.Left && DateTime.UtcNow - Shelf.LastOutsideHide >= TimeSpan.FromMilliseconds(350))
+                    Shelf.Toggle();
+            };
             tray.Visible = true;
         }
 
@@ -198,19 +204,20 @@ namespace ScreenLine
             captureMenu.InputGestureText = events.CaptureShortcutAvailable ? ShortcutWindow.Label(Gallery.Store.State.CaptureModifiers, Gallery.Store.State.CaptureKey) : "快捷键被占用";
         }
 
-        void SetRevealMode(bool hover, bool shortcut, bool wholeEdge)
+        void SetRevealMode(bool push, bool hover, bool shortcut)
         {
             var state = Gallery.Store.State;
-            if (!hover && !shortcut) { SyncRevealMenu(); Notice("至少保留一种展开方式"); return; }
+            bool mouseReveal = push || hover;
+            if (!mouseReveal && !shortcut) { SyncRevealMenu(); Notice("至少保留一种展开方式"); return; }
             if (shortcut && !events.ShortcutAvailable && !events.RegisterToggle(3, (uint)'T'))
             {
                 Notice("Ctrl+Alt+T 已被占用，可点击托盘图标打开。");
                 // 只剩托盘入口时不切换，避免用户找不到展开方式。
-                if (!hover) { SyncRevealMenu(); return; }
+                if (!mouseReveal) { SyncRevealMenu(); return; }
             }
             bool previous = state.ToggleShortcut;
             state.ToggleShortcut = shortcut;
-            try { Shelf.SetRevealOnTopHover(hover, wholeEdge); }
+            try { Shelf.SetMouseReveal(push, hover); }
             catch (Exception error)
             {
                 state.ToggleShortcut = previous;
@@ -218,13 +225,14 @@ namespace ScreenLine
                 Gallery.Store.Log(error); SyncRevealMenu(); Notice("展开方式保存失败"); return;
             }
             if (!shortcut) events.UnregisterToggle();
+            events.SetRawMouseInput(push);
             SyncRevealMenu();
         }
 
         void SyncRevealMenu()
         {
-            cornerToggle.IsChecked = Gallery.Store.State.RevealOnTopHover && !Gallery.Store.State.HoverWholeEdge;
-            topHoverToggle.IsChecked = Gallery.Store.State.RevealOnTopHover && Gallery.Store.State.HoverWholeEdge;
+            topPushToggle.IsChecked = Gallery.Store.State.RevealOnTopPush;
+            topHoverToggle.IsChecked = Gallery.Store.State.RevealOnTopHover;
             shortcutToggle.IsChecked = Gallery.Store.State.ToggleShortcut;
             TrayMenu.Shortcut.Text = events.ShortcutAvailable ? "Ctrl+Alt+T" : "";
         }
@@ -366,7 +374,7 @@ namespace ScreenLine
 
         void SyncScreens()
         {
-            TrayMenu.SetScreens(WindowsNative.Screens, Gallery.Store.State.DisplayDevice, SelectScreen, Gallery.Store.State.HoverWholeEdge);
+            TrayMenu.SetScreens(WindowsNative.Screens, Gallery.Store.State.DisplayDevice, SelectScreen, Gallery.Store.State.RevealOnTopPush);
         }
 
         void SelectScreen(string device)
